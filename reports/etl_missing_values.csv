@@ -1,0 +1,24 @@
+column,missing_values
+Delivery_person_Age,1501
+Delivery_person_Ratings,1589
+Weather_conditions,493
+Road_traffic_density,482
+Vehicle_condition,0
+Type_of_order,0
+Type_of_vehicle,0
+multiple_deliveries,790
+Festival,192
+City,957
+Time_taken (min),0
+distance_km,3260
+coordinates_valid,0
+order_minutes,1742
+pickup_minutes,355
+order_time_missing,0
+pickup_time_missing,0
+order_hour,1742
+pickup_hour,355
+preparation_time_min,2078
+order_day,0
+order_month,0
+order_weekday,0

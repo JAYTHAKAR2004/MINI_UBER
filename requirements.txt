@@ -1,0 +1,15 @@
+
+pandas
+numpy
+scikit-learn
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg[binary]
+redis
+confluent-kafka
+pydantic
+python-dotenv
+joblib
+pytest
+httpx
