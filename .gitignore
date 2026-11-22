@@ -27,3 +27,10 @@ logs/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Backup files and disk images
+*.backup
+*_backup
+recovery-backup/
+*.vhdx
+graphql_deps/
