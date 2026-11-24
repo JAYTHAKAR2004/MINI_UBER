@@ -714,7 +714,10 @@ def ensure_orders_table():
 @app.on_event("startup")
 def initialize_database():
     """Initialize database tables when each API instance starts."""
-    ensure_orders_table()
+    try:
+        ensure_orders_table()
+    except SQLAlchemyError as exc:
+        print(f"Database startup initialization skipped: {exc}")
 
 
 
