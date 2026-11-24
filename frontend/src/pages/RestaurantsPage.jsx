@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { RotateCcw, Search, SlidersHorizontal } from 'lucide-react';
+import { Leaf, RotateCcw, Search, SlidersHorizontal } from 'lucide-react';
 import { CATEGORIES, RESTAURANTS } from '../data/restaurants';
 import RestaurantCard from '../components/RestaurantCard';
 import { RestaurantSkeletonCard } from '../components/SkeletonCard';
@@ -20,12 +20,14 @@ export default function RestaurantsPage() {
   const [fastOnly, setFastOnly] = useState(
     searchParams.get('fast') === 'true'
   );
+  const [pureVegOnly, setPureVegOnly] = useState(false);
   const [offersOnly, setOffersOnly] = useState(
     searchParams.get('offers') === 'true'
   );
   const [freeDeliveryOnly, setFreeDeliveryOnly] = useState(
     searchParams.get('freeDelivery') === 'true'
   );
+  const [priceRange, setPriceRange] = useState('all');
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -39,7 +41,7 @@ export default function RestaurantsPage() {
 
   useEffect(() => {
     setIsLoading(true);
-    const timer = setTimeout(() => setIsLoading(false), 180);
+    const timer = setTimeout(() => setIsLoading(false), 160);
     return () => clearTimeout(timer);
   }, [selectedCategory, sortBy, activeTab]);
 
@@ -70,8 +72,10 @@ export default function RestaurantsPage() {
     setSortBy('relevance');
     setTopRatedOnly(false);
     setFastOnly(false);
+    setPureVegOnly(false);
     setOffersOnly(false);
     setFreeDeliveryOnly(false);
+    setPriceRange('all');
     setSearchParams({}, { replace: true });
   };
 
@@ -90,8 +94,14 @@ export default function RestaurantsPage() {
 
       if (topRatedOnly && r.rating < 4.5) return false;
       if (fastOnly && r.etaMinutes > 25) return false;
+      if (pureVegOnly && !r.isPureVeg) return false;
       if (offersOnly && !r.offer) return false;
       if (freeDeliveryOnly && r.deliveryFee > 0) return false;
+      if (priceRange === 'budget' && r.costForTwo > 500) return false;
+      if (priceRange === 'mid' && (r.costForTwo < 500 || r.costForTwo > 800)) {
+        return false;
+      }
+      if (priceRange === 'premium' && r.costForTwo <= 800) return false;
 
       if (!q) return true;
       const matchesMeta =
@@ -124,8 +134,10 @@ export default function RestaurantsPage() {
     sortBy,
     topRatedOnly,
     fastOnly,
+    pureVegOnly,
     offersOnly,
     freeDeliveryOnly,
+    priceRange,
   ]);
 
   return (
@@ -179,6 +191,18 @@ export default function RestaurantsPage() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => setPureVegOnly((v) => !v)}
+            className={`inline-flex items-center gap-1 rounded-full border px-3.5 py-2 text-xs font-semibold transition-colors ${
+              pureVegOnly
+                ? 'border-emerald-600 bg-emerald-50 text-emerald-800'
+                : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-100'
+            }`}
+          >
+            <Leaf className="h-3.5 w-3.5 text-emerald-600" />
+            Pure Veg
+          </button>
+          <button
+            type="button"
             onClick={() => setTopRatedOnly((v) => !v)}
             className={`rounded-full border px-3.5 py-2 text-xs font-semibold transition-colors ${
               topRatedOnly
@@ -221,6 +245,18 @@ export default function RestaurantsPage() {
           >
             Free Delivery
           </button>
+
+          <select
+            value={priceRange}
+            onChange={(e) => setPriceRange(e.target.value)}
+            aria-label="Filter by price range"
+            className="rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-semibold text-neutral-700 focus:outline-none"
+          >
+            <option value="all">Price: Any</option>
+            <option value="budget">Under ₹500</option>
+            <option value="mid">₹500 – ₹800</option>
+            <option value="premium">₹800+</option>
+          </select>
 
           <label className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-white px-3.5 py-2 text-xs font-semibold text-neutral-700">
             <SlidersHorizontal className="h-3.5 w-3.5 text-neutral-500" />

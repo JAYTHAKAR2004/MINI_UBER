@@ -154,12 +154,12 @@ export default function PredictETAPage() {
 
   useEffect(() => {
     if (!autoPlay || !activeOrder) return undefined;
-    if (activeOrder.stageIndex >= ORDER_STAGES.length - 1) {
+    if ((activeOrder.stageIndex ?? 0) >= ORDER_STAGES.length - 2) {
       setAutoPlay(false);
       return undefined;
     }
     const timer = setInterval(() => {
-      updateOrderStage(activeOrder.id, activeOrder.stageIndex + 1);
+      updateOrderStage(activeOrder.id, (activeOrder.stageIndex ?? 0) + 1);
     }, 2400);
     return () => clearInterval(timer);
   }, [autoPlay, activeOrder, updateOrderStage]);
@@ -378,6 +378,10 @@ export default function PredictETAPage() {
                 (activeOrder.stageIndex ?? 0) + 1
               )
             }
+            onMarkDelivered={() => {
+              setAutoPlay(false);
+              updateOrderStage(activeOrder.id, ORDER_STAGES.length - 1);
+            }}
             onReset={() => {
               setAutoPlay(false);
               updateOrderStage(activeOrder.id, 0);

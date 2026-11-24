@@ -2,16 +2,22 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowRight,
+  Bike,
   Clock,
   Loader2,
   MapPin,
   Package,
+  RefreshCw,
+  ShieldCheck,
   Sparkles,
+  Star,
   Store,
 } from 'lucide-react';
 import { ORDER_STAGES, useOrders } from '../context/OrderContext';
 import { useLocationContext } from '../context/LocationContext';
+import { useToast } from '../context/ToastContext';
 import { RESTAURANTS } from '../data/restaurants';
+import { FINAL_TEST_METRICS } from '../data/analyticsBaseline';
 import { predictETA } from '../services/etaService';
 import { formatPrice, formatTimestamp } from '../utils/formatters';
 import {
@@ -19,6 +25,7 @@ import {
   calculateHaversineKm,
 } from '../utils/haversine';
 import OrderProgressTracker from '../components/OrderProgressTracker';
+import DeliveryTrackingMap from '../components/maps/DeliveryTrackingMap';
 import VegBadge from '../components/VegBadge';
 
 export default function OrderTrackingPage() {
@@ -29,29 +36,90 @@ export default function OrderTrackingPage() {
     getOrderById,
     placeOrder,
     updateOrderStage,
+    updateOrderPrediction,
     recordPrediction,
   } = useOrders();
   const { activePreset } = useLocationContext();
+  const { showToast } = useToast();
 
   const [autoPlay, setAutoPlay] = useState(false);
   const [creatingDemo, setCreatingDemo] = useState(false);
+  const [refreshingEta, setRefreshingEta] = useState(false);
 
   const activeOrder = useMemo(() => {
     if (orderId) return getOrderById(orderId) || orders[0] || null;
     return orders[0] || null;
   }, [orderId, getOrderById, orders]);
 
+  // Never auto-advance to "Delivered" (stageIndex === ORDER_STAGES.length - 1); stop at "On the way"
   useEffect(() => {
     if (!autoPlay || !activeOrder) return undefined;
-    if (activeOrder.stageIndex >= ORDER_STAGES.length - 1) {
+    const onTheWayIndex = ORDER_STAGES.length - 2;
+    if ((activeOrder.stageIndex ?? 0) >= onTheWayIndex) {
       setAutoPlay(false);
       return undefined;
     }
     const timer = setInterval(() => {
-      updateOrderStage(activeOrder.id, activeOrder.stageIndex + 1);
+      updateOrderStage(activeOrder.id, (activeOrder.stageIndex ?? 0) + 1);
     }, 2400);
     return () => clearInterval(timer);
   }, [autoPlay, activeOrder, updateOrderStage]);
+
+  const handleRefreshEta = async () => {
+    if (!activeOrder || refreshingEta) return;
+    setRefreshingEta(true);
+    const rCoords = activeOrder.restaurantCoordinates || { lat: 12.9716, lng: 77.5946 };
+    const dCoords = activeOrder.deliveryCoordinates || { lat: 12.9855, lng: 77.6412 };
+    const dist =
+      calculateHaversineKm(rCoords.lat, rCoords.lng, dCoords.lat, dCoords.lng) ??
+      5.2;
+
+    const now = new Date();
+    const jsDay = now.getDay();
+    const pythonWeekday = jsDay === 0 ? 6 : jsDay - 1;
+
+    try {
+      const res = await predictETA({
+        Delivery_person_Age: 28,
+        Delivery_person_Ratings: 4.7,
+        Vehicle_condition: 2,
+        multiple_deliveries: 0,
+        distance_km: dist,
+        coordinates_valid: areCoordinatesValid(
+          rCoords.lat,
+          rCoords.lng,
+          dCoords.lat,
+          dCoords.lng
+        ),
+        order_time_missing: 0,
+        order_hour: now.getHours(),
+        order_day: now.getDate(),
+        order_month: now.getMonth() + 1,
+        order_weekday: pythonWeekday,
+        Weather_conditions: 'Cloudy',
+        Road_traffic_density: 'Medium',
+        Type_of_order: activeOrder.items?.[0]?.orderType || 'Meal',
+        Type_of_vehicle: 'motorcycle',
+        Festival: 'No',
+        City: activeOrder.restaurant?.modelCity || 'Metropolitian',
+      });
+      recordPrediction(res);
+      updateOrderPrediction(activeOrder.id, res);
+      showToast({
+        title: `Refreshed ETA: ${res.predicted_eta_minutes} min`,
+        description: 'Live forecast updated by Random Forest model.',
+        type: 'success',
+      });
+    } catch (err) {
+      showToast({
+        title: 'Unable to refresh ETA',
+        description: err.message,
+        type: 'error',
+      });
+    } finally {
+      setRefreshingEta(false);
+    }
+  };
 
   const handleLoadSampleOrder = async () => {
     setCreatingDemo(true);
@@ -62,7 +130,7 @@ export default function OrderTrackingPage() {
         sampleRest.coordinates.lng,
         activePreset.deliveryLat,
         activePreset.deliveryLon
-      ) ?? 5.6;
+      ) ?? 5.28;
 
     const now = new Date();
     const jsDay = now.getDay();
@@ -146,11 +214,15 @@ export default function OrderTrackingPage() {
       restaurantCoordinates: sampleRest.coordinates,
       customerName: 'Guest Customer',
       customerPhone: '+91 98765 00000',
+      paymentMethod: 'upi',
+      paymentStatus: 'DEMO',
       distanceKm: dist,
       etaMinutes,
       etaSource,
       predictionTelemetry: telemetry,
       predictionTimestamp,
+      stageIndex: 3,
+      orderStatus: ORDER_STAGES[3],
     });
 
     setCreatingDemo(false);
@@ -168,7 +240,7 @@ export default function OrderTrackingPage() {
         </h1>
         <p className="mx-auto mt-2 max-w-md text-sm text-neutral-500">
           Place an order from any restaurant checkout, or load a sample order to
-          preview the order tracking flow.
+          preview the interactive Leaflet map and 7-stage delivery tracker.
         </p>
 
         <div className="mt-7 flex flex-wrap items-center justify-center gap-3">
@@ -196,16 +268,32 @@ export default function OrderTrackingPage() {
     );
   }
 
-  const stageIndex = activeOrder.stageIndex ?? 0;
+  const stageIndex = activeOrder.stageIndex ?? 1;
+  const isDelivered = stageIndex === ORDER_STAGES.length - 1;
+  const etaLow = Math.max(
+    5,
+    Math.round(activeOrder.etaMinutes - FINAL_TEST_METRICS.mae)
+  );
+  const etaHigh = Math.round(activeOrder.etaMinutes + FINAL_TEST_METRICS.mae);
 
   return (
-    <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
+    <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl font-extrabold text-brand-black sm:text-3xl">
-            Order {activeOrder.id}
-          </h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="font-display text-2xl font-extrabold text-brand-black sm:text-3xl">
+              Order {activeOrder.id}
+            </h1>
+            <span className="inline-flex items-center gap-1 rounded-full border border-neutral-200 bg-surface-soft px-2.5 py-0.5 text-[11px] font-semibold text-neutral-700">
+              <ShieldCheck className="h-3 w-3 text-brand-primary" />
+              {activeOrder.paymentStatus === 'PAID_TEST'
+                ? 'Razorpay Test Paid'
+                : activeOrder.paymentStatus === 'COD_DEMO'
+                ? 'COD (Demo)'
+                : 'Demo Order'}
+            </span>
+          </div>
           <p className="mt-1 text-xs text-neutral-500">
             Placed {formatTimestamp(activeOrder.createdAt)} ·{' '}
             {activeOrder.restaurant?.name}
@@ -246,49 +334,125 @@ export default function OrderTrackingPage() {
           </span>
           <div>
             <p className="text-xs font-bold uppercase tracking-wider text-brand-primaryDark">
-              {stageIndex === ORDER_STAGES.length - 1
-                ? 'Order Delivered'
-                : 'Estimated Delivery Time'}
+              {isDelivered ? 'Order Delivered' : 'Estimated Delivery Time'}
             </p>
             <p className="font-display text-2xl font-extrabold text-brand-black tabular-nums">
-              {stageIndex === ORDER_STAGES.length - 1
-                ? 'Delivered'
-                : `${activeOrder.etaMinutes} minutes`}
+              {isDelivered ? 'Delivered' : `${activeOrder.etaMinutes} minutes`}
             </p>
             <p className="text-xs text-neutral-600">
-              {activeOrder.etaSource === 'live-ml'
-                ? 'Forecasted by Random Forest ML model'
-                : 'Restaurant baseline estimate'}
+              {isDelivered
+                ? 'Marked delivered manually in demo tracker'
+                : `Arrival window ${etaLow}–${etaHigh} min · ${
+                    activeOrder.etaSource === 'live-ml'
+                      ? 'Predicted by Random Forest ML'
+                      : 'Restaurant baseline estimate'
+                  }`}
             </p>
           </div>
         </div>
 
-        <Link
-          to={`/predict/${activeOrder.id}`}
-          className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-primary px-5 py-3 text-sm font-bold text-white shadow-soft hover:bg-brand-primaryDark"
-        >
-          <Sparkles className="h-4 w-4" />
-          View AI Delivery Prediction
-          <ArrowRight className="h-4 w-4" />
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={handleRefreshEta}
+            disabled={refreshingEta}
+            className="inline-flex items-center gap-1.5 rounded-xl border border-neutral-300 bg-white px-4 py-2.5 text-xs font-bold text-brand-black hover:bg-surface-soft disabled:opacity-60"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${refreshingEta ? 'animate-spin' : ''}`}
+            />
+            Refresh Live ETA
+          </button>
+          <Link
+            to={`/predict/${activeOrder.id}`}
+            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-primary px-5 py-2.5 text-xs font-bold text-white shadow-soft hover:bg-brand-primaryDark"
+          >
+            <Sparkles className="h-4 w-4" />
+            Customize Conditions
+            <ArrowRight className="h-4 w-4" />
+          </Link>
+        </div>
       </div>
 
-      {/* 5-Stage Progress Tracker */}
+      {/* Interactive Leaflet Map */}
+      <div className="mt-6">
+        <DeliveryTrackingMap
+          restaurantName={activeOrder.restaurant?.name}
+          restaurantCoords={
+            activeOrder.restaurantCoordinates || { lat: 12.9716, lng: 77.5946 }
+          }
+          deliveryCoords={
+            activeOrder.deliveryCoordinates || { lat: 12.9855, lng: 77.6412 }
+          }
+          deliveryLabel={activeOrder.deliveryAddress}
+          etaMinutes={activeOrder.etaMinutes}
+          stageIndex={stageIndex}
+          stageLabel={ORDER_STAGES[stageIndex]}
+          showPartner={stageIndex >= 3}
+          heightClass="h-80 sm:h-96"
+        />
+      </div>
+
+      {/* 7-Stage Progress Tracker */}
       <div className="mt-6">
         <OrderProgressTracker
           stageIndex={stageIndex}
           autoPlay={autoPlay}
           onToggleAutoPlay={() => setAutoPlay((v) => !v)}
-          onNextStage={() => updateOrderStage(activeOrder.id, stageIndex + 1)}
+          onNextStage={() =>
+            updateOrderStage(activeOrder.id, stageIndex + 1)
+          }
+          onMarkDelivered={() => {
+            setAutoPlay(false);
+            updateOrderStage(activeOrder.id, ORDER_STAGES.length - 1);
+          }}
           onReset={() => {
             setAutoPlay(false);
-            updateOrderStage(activeOrder.id, 0);
+            updateOrderStage(activeOrder.id, 1);
           }}
         />
       </div>
 
-      {/* Delivery Info & Items */}
-      <div className="mt-6 grid gap-6 md:grid-cols-2">
+      {/* Partner Card, Delivery Info & Order Summary */}
+      <div className="mt-6 grid gap-6 md:grid-cols-3">
+        <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-soft">
+          <div className="flex items-center justify-between">
+            <h2 className="font-display text-sm font-bold text-brand-black">
+              Delivery Partner
+            </h2>
+            <span className="rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-800">
+              Demo Info
+            </span>
+          </div>
+          {stageIndex < 3 ? (
+            <p className="mt-3 text-xs text-neutral-500">
+              Partner will be assigned once your order reaches &ldquo;Delivery partner assigned&rdquo;.
+            </p>
+          ) : (
+            <div className="mt-3 flex items-start gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-brand-primarySoft text-brand-primary">
+                <Bike className="h-5 w-5" />
+              </span>
+              <div>
+                <p className="text-sm font-bold text-brand-black">
+                  {activeOrder.partnerInfo?.name || 'Rohan Sharma (Demo Partner)'}
+                </p>
+                <p className="mt-0.5 flex items-center gap-2 text-xs text-neutral-600">
+                  <span>{activeOrder.partnerInfo?.vehicle || 'Motorcycle'}</span>
+                  <span>·</span>
+                  <span className="inline-flex items-center gap-0.5 font-semibold text-brand-rating">
+                    {activeOrder.partnerInfo?.rating || 4.8}
+                    <Star className="h-3 w-3 fill-brand-rating text-brand-rating" />
+                  </span>
+                </p>
+                <p className="mt-1.5 text-[11px] text-neutral-400">
+                  Live courier phone/chat dispatch is unavailable in demo mode.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-soft">
           <h2 className="font-display text-sm font-bold text-brand-black">
             Delivery Details
@@ -308,10 +472,10 @@ export default function OrderTrackingPage() {
                 {activeOrder.deliveryAddress}
               </span>
             </p>
-            {activeOrder.distanceKm && (
+            {activeOrder.deliveryInstructions && (
               <p>
-                <strong className="text-brand-black">Route Distance:</strong>{' '}
-                {activeOrder.distanceKm} km
+                <strong className="text-brand-black">Instructions:</strong>{' '}
+                {activeOrder.deliveryInstructions}
               </p>
             )}
           </div>

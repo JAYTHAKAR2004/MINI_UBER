@@ -1,4 +1,4 @@
-
+﻿
 import logging
 from pathlib import Path
 
@@ -19,6 +19,28 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+
+def load_dataset(file_path):
+    """Load datasets from CSV, JSON, or Parquet formats."""
+    file_path = Path(file_path)
+    extension = file_path.suffix.lower()
+
+    if extension == ".csv":
+        df = pd.read_csv(file_path)
+    elif extension in (".json", ".jsonl"):
+        df = pd.read_json(file_path, lines=(extension == ".jsonl"))
+    elif extension in (".parquet", ".pq"):
+        df = pd.read_parquet(file_path)
+    else:
+        raise ValueError(f"Unsupported file format: {extension}")
+
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise ValueError(f"Invalid or empty dataset: {file_path}")
+
+    logger.info("Loaded %s dataset: %s", extension, df.shape)
+    return df
+
 
 
 def parse_time(value):
@@ -168,7 +190,7 @@ def clean_and_engineer(df, dataset_name):
 
     df["order_day"] = dates.dt.day
     df["order_month"] = dates.dt.month
-    df["order_weekday"] = dates.dt.dayofweek
+    df["order_weekday"] = dates.dt.day_of_week
 
     # Remove identifiers and raw columns not needed by the model
     df = df.drop(
@@ -225,8 +247,8 @@ def main():
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
 
-    train = pd.read_parquet(RAW_DIR / "train.parquet")
-    test = pd.read_parquet(RAW_DIR / "test.parquet")
+    train = load_dataset(RAW_DIR / "train.parquet")
+    test = load_dataset(RAW_DIR / "test.parquet")
 
     logger.info("Raw train shape: %s", train.shape)
     logger.info("Raw test shape: %s", test.shape)
@@ -264,3 +286,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

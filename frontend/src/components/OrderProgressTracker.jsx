@@ -1,36 +1,38 @@
-import { Check, FastForward, Pause, Play, RotateCcw } from 'lucide-react';
+import { Check, CheckCircle2, FastForward, Pause, Play, RotateCcw } from 'lucide-react';
 import { ORDER_STAGES } from '../context/OrderContext';
 
 export default function OrderProgressTracker({
-  stageIndex = 0,
+  stageIndex = 1,
   autoPlay = false,
   onToggleAutoPlay,
   onNextStage,
+  onMarkDelivered,
   onReset,
 }) {
   const clampedStage = Math.max(
     0,
     Math.min(ORDER_STAGES.length - 1, stageIndex)
   );
+  const isDelivered = clampedStage === ORDER_STAGES.length - 1;
 
   return (
     <div className="rounded-2xl border border-neutral-200 bg-white p-5 shadow-soft sm:p-6">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="font-display text-base font-bold text-brand-black">
-            Order Status
+            Delivery Timeline
           </h2>
           <p className="text-xs text-neutral-500">
-            Demo tracking timeline — live courier GPS events are unavailable
+            Demo order progression — does not auto-mark &ldquo;Delivered&rdquo; on a timer
           </p>
         </div>
         <span className="rounded-full bg-surface-soft px-3 py-1 text-[11px] font-semibold text-neutral-600">
-          Demo Tracking
+          {ORDER_STAGES[clampedStage]}
         </span>
       </div>
 
-      {/* Desktop Horizontal Stepper */}
-      <div className="mt-6 hidden md:block">
+      {/* Desktop 7-Stage Horizontal Stepper */}
+      <div className="mt-6 hidden lg:block">
         <div className="relative flex items-start justify-between">
           <div
             className="absolute left-5 right-5 top-4 h-0.5 bg-neutral-200"
@@ -52,21 +54,25 @@ export default function OrderProgressTracker({
             return (
               <div
                 key={stage}
-                className="relative z-10 flex w-1/5 flex-col items-center text-center"
+                className="relative z-10 flex flex-1 flex-col items-center text-center px-1"
               >
                 <span
                   className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold transition-colors ${
-                    completed
+                    completed || (current && isDelivered)
                       ? 'bg-brand-primary text-white'
                       : current
                       ? 'bg-brand-primary text-white ring-4 ring-brand-primarySoft'
                       : 'border border-neutral-300 bg-white text-neutral-400'
                   }`}
                 >
-                  {completed ? <Check className="h-4 w-4" /> : idx + 1}
+                  {completed || (current && isDelivered) ? (
+                    <Check className="h-4 w-4" />
+                  ) : (
+                    idx + 1
+                  )}
                 </span>
                 <p
-                  className={`mt-2.5 px-1 text-xs font-semibold leading-snug ${
+                  className={`mt-2 text-[11px] font-semibold leading-snug ${
                     completed || current
                       ? 'text-brand-black'
                       : 'text-neutral-400'
@@ -74,7 +80,7 @@ export default function OrderProgressTracker({
                 >
                   {stage}
                 </p>
-                {current && (
+                {current && !isDelivered && (
                   <span className="mt-0.5 text-[10px] font-semibold text-brand-primary">
                     Current
                   </span>
@@ -85,8 +91,8 @@ export default function OrderProgressTracker({
         </div>
       </div>
 
-      {/* Mobile Vertical Stepper */}
-      <ol className="mt-5 space-y-3.5 md:hidden">
+      {/* Mobile & Tablet Vertical Stepper */}
+      <ol className="mt-5 space-y-3 lg:hidden">
         {ORDER_STAGES.map((stage, idx) => {
           const completed = idx < clampedStage;
           const current = idx === clampedStage;
@@ -95,14 +101,18 @@ export default function OrderProgressTracker({
               <div className="flex flex-col items-center">
                 <span
                   className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold ${
-                    completed
+                    completed || (current && isDelivered)
                       ? 'bg-brand-primary text-white'
                       : current
                       ? 'bg-brand-primary text-white ring-4 ring-brand-primarySoft'
                       : 'bg-surface-soft text-neutral-400'
                   }`}
                 >
-                  {completed ? <Check className="h-3.5 w-3.5" /> : idx + 1}
+                  {completed || (current && isDelivered) ? (
+                    <Check className="h-3.5 w-3.5" />
+                  ) : (
+                    idx + 1
+                  )}
                 </span>
                 {idx < ORDER_STAGES.length - 1 && (
                   <span
@@ -122,7 +132,7 @@ export default function OrderProgressTracker({
                 >
                   {stage}
                 </p>
-                {current && (
+                {current && !isDelivered && (
                   <p className="text-[11px] font-medium text-brand-primary">
                     In progress
                   </p>
@@ -133,14 +143,15 @@ export default function OrderProgressTracker({
         })}
       </ol>
 
-      {/* Interactive Demo Simulation Controls */}
-      {(onToggleAutoPlay || onNextStage || onReset) && (
+      {/* Interactive Demo Controls */}
+      {(onToggleAutoPlay || onNextStage || onMarkDelivered || onReset) && (
         <div className="mt-6 flex flex-wrap items-center gap-2 border-t border-neutral-100 pt-4">
           {onToggleAutoPlay && (
             <button
               type="button"
+              disabled={clampedStage >= ORDER_STAGES.length - 2}
               onClick={onToggleAutoPlay}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-black px-3 py-1.5 text-xs font-semibold text-white hover:bg-neutral-800"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-black px-3 py-1.5 text-xs font-semibold text-white hover:bg-neutral-800 disabled:opacity-40"
             >
               {autoPlay ? (
                 <>
@@ -150,7 +161,7 @@ export default function OrderProgressTracker({
               ) : (
                 <>
                   <Play className="h-3.5 w-3.5 text-brand-primary" />
-                  Simulate Progress
+                  Simulate Until &ldquo;On the way&rdquo;
                 </>
               )}
             </button>
@@ -158,12 +169,22 @@ export default function OrderProgressTracker({
           {onNextStage && (
             <button
               type="button"
-              disabled={clampedStage >= ORDER_STAGES.length - 1}
+              disabled={isDelivered}
               onClick={onNextStage}
               className="inline-flex items-center gap-1.5 rounded-lg border border-neutral-200 bg-white px-3 py-1.5 text-xs font-semibold text-brand-black hover:bg-surface-soft disabled:opacity-40"
             >
               <FastForward className="h-3.5 w-3.5" />
-              Next Step
+              Next Stage
+            </button>
+          )}
+          {onMarkDelivered && !isDelivered && (
+            <button
+              type="button"
+              onClick={onMarkDelivered}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Mark Delivered (Demo)
             </button>
           )}
           {onReset && (

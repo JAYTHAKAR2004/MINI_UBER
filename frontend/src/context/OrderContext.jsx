@@ -1,13 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 
-const ORDERS_KEY = 'mini_uber_orders_v1';
+const ORDERS_KEY = 'mini_uber_orders_v2';
 const PREDICTIONS_KEY = 'mini_uber_predictions_v1';
 
 export const ORDER_STAGES = [
-  'Order confirmed',
-  'Restaurant preparing food',
-  'Pickup',
-  'Out for delivery',
+  'Order placed',
+  'Restaurant confirmed',
+  'Food preparation',
+  'Delivery partner assigned',
+  'Order picked up',
+  'On the way',
   'Delivered',
 ];
 
@@ -18,6 +20,8 @@ export function OrderProvider({ children }) {
     try {
       const raw = localStorage.getItem(ORDERS_KEY);
       if (raw) return JSON.parse(raw);
+      const legacy = localStorage.getItem('mini_uber_orders_v1');
+      if (legacy) return JSON.parse(legacy);
     } catch {
       // ignore storage errors
     }
@@ -67,21 +71,53 @@ export function OrderProvider({ children }) {
   }, []);
 
   const placeOrder = useCallback((orderPayload) => {
-    const id = `MU-${Math.floor(100000 + Math.random() * 900000)}`;
+    const id = orderPayload.id || `MU-${Math.floor(100000 + Math.random() * 900000)}`;
     const newOrder = {
       id,
       createdAt: new Date().toISOString(),
-      stageIndex: 0,
+      stageIndex: orderPayload.stageIndex ?? 1, // Order placed -> Restaurant confirmed
+      orderStatus:
+        orderPayload.orderStatus ||
+        ORDER_STAGES[orderPayload.stageIndex ?? 1],
+      paymentStatus: orderPayload.paymentStatus || 'DEMO',
+      paymentMode: orderPayload.paymentMode || 'demo',
+      razorpayOrderId: orderPayload.razorpayOrderId || null,
+      razorpayPaymentId: orderPayload.razorpayPaymentId || null,
+      idempotencyKey: orderPayload.idempotencyKey || null,
+      deliveryInstructions: orderPayload.deliveryInstructions || '',
+      deliveryAddressDetails: orderPayload.deliveryAddressDetails || null,
+      partnerInfo: orderPayload.partnerInfo || {
+        name: 'Rohan Sharma (Demo Partner)',
+        vehicle: 'Motorcycle',
+        rating: 4.8,
+        note: 'Simulated courier metadata — live partner dispatch unavailable',
+      },
       ...orderPayload,
     };
-    setOrders((prev) => [newOrder, ...prev].slice(0, 20));
+    setOrders((prev) => {
+      if (
+        newOrder.idempotencyKey &&
+        prev.some((o) => o.idempotencyKey === newOrder.idempotencyKey)
+      ) {
+        return prev;
+      }
+      return [newOrder, ...prev].slice(0, 25);
+    });
     return newOrder;
   }, []);
 
   const updateOrderStage = useCallback((orderId, stageIndex) => {
     const clamped = Math.max(0, Math.min(ORDER_STAGES.length - 1, stageIndex));
     setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, stageIndex: clamped } : o))
+      prev.map((o) =>
+        o.id === orderId
+          ? {
+              ...o,
+              stageIndex: clamped,
+              orderStatus: ORDER_STAGES[clamped],
+            }
+          : o
+      )
     );
   }, []);
 

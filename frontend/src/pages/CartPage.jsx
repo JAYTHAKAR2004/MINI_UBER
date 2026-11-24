@@ -1,17 +1,25 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   ArrowRight,
+  Clock,
   Minus,
   Plus,
   ShoppingBag,
+  Sparkles,
   Tag,
   Trash2,
   X,
 } from 'lucide-react';
 import { useCart } from '../context/CartContext';
+import { useLocationContext } from '../context/LocationContext';
 import { PROMO_OFFERS } from '../data/restaurants';
 import { useToast } from '../context/ToastContext';
+import { predictETA } from '../services/etaService';
+import {
+  areCoordinatesValid,
+  calculateHaversineKm,
+} from '../utils/haversine';
 import FoodImage from '../components/FoodImage';
 import VegBadge from '../components/VegBadge';
 import { formatPrice } from '../utils/formatters';
@@ -35,9 +43,55 @@ export default function CartPage() {
     applyPromo,
     removePromo,
   } = useCart();
+  const { lat, lng, modelCity } = useLocationContext();
   const { showToast } = useToast();
 
   const [couponInput, setCouponInput] = useState('');
+  const [liveEta, setLiveEta] = useState(null);
+
+  useEffect(() => {
+    if (!restaurant || items.length === 0) return undefined;
+    let active = true;
+    const now = new Date();
+    const jsDay = now.getDay();
+    const pythonWeekday = jsDay === 0 ? 6 : jsDay - 1;
+    const rLat = restaurant.coordinates?.lat ?? 12.9716;
+    const rLon = restaurant.coordinates?.lng ?? 77.5946;
+    const dLat = lat ?? 12.9855;
+    const dLon = lng ?? 77.6412;
+
+    predictETA({
+      Delivery_person_Age: 28,
+      Delivery_person_Ratings: 4.7,
+      Vehicle_condition: 2,
+      multiple_deliveries: 0,
+      distance_km: calculateHaversineKm(rLat, rLon, dLat, dLon) ?? 4.8,
+      coordinates_valid: areCoordinatesValid(rLat, rLon, dLat, dLon),
+      order_time_missing: 0,
+      order_hour: now.getHours(),
+      order_day: now.getDate(),
+      order_month: now.getMonth() + 1,
+      order_weekday: pythonWeekday,
+      Weather_conditions: 'Cloudy',
+      Road_traffic_density: 'Medium',
+      Type_of_order: items[0]?.orderType || 'Meal',
+      Type_of_vehicle: 'motorcycle',
+      Festival: 'No',
+      City: restaurant.modelCity || modelCity || 'Metropolitian',
+    })
+      .then((res) => {
+        if (active && typeof res?.predicted_eta_minutes === 'number') {
+          setLiveEta(res.predicted_eta_minutes);
+        }
+      })
+      .catch(() => {
+        // Silent fallback to restaurant baseline ETA
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [restaurant, items, lat, lng, modelCity]);
 
   if (items.length === 0) {
     return (
@@ -107,6 +161,25 @@ export default function CartPage() {
       <div className="mt-8 grid gap-8 lg:grid-cols-12">
         {/* Items */}
         <div className="space-y-4 lg:col-span-7">
+          <div className="flex items-center justify-between rounded-2xl border border-brand-primaryBorder bg-brand-primarySoft/60 px-4 py-3 text-xs">
+            <span className="inline-flex items-center gap-2 font-semibold text-brand-black">
+              {liveEta ? (
+                <Sparkles className="h-4 w-4 text-brand-primary" />
+              ) : (
+                <Clock className="h-4 w-4 text-brand-primary" />
+              )}
+              {liveEta
+                ? `Estimated delivery in ~${Math.round(liveEta)} mins (AI Forecast)`
+                : `Estimated delivery in ~${restaurant?.etaMinutes || 25} mins`}
+            </span>
+            <Link
+              to="/checkout"
+              className="font-bold text-brand-primary hover:underline"
+            >
+              Select address →
+            </Link>
+          </div>
+
           {items.map((item) => (
             <div
               key={item.id}

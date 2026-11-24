@@ -30,62 +30,109 @@ export const PROMO_OFFERS = {
   },
 };
 
+export const PROMO_BANNERS = [
+  {
+    id: 'banner-welcome',
+    badge: 'LIMITED TIME OFFER · DEMO PROMO',
+    title: 'Flat 50% OFF on your first feast',
+    subtitle: 'Use code WELCOME50 on orders above ₹249 across top-rated kitchens.',
+    code: 'WELCOME50',
+    cta: 'Apply WELCOME50',
+    image:
+      'https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=1000&q=80',
+  },
+  {
+    id: 'banner-freedel',
+    badge: 'ZERO DELIVERY FEE · DEMO PROMO',
+    title: 'Free Doorstep Delivery Above ₹199',
+    subtitle: 'Unlock zero delivery charges on biryani, burgers, rolls, and bowls.',
+    code: 'FREEDEL',
+    cta: 'Apply FREEDEL',
+    image:
+      'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?auto=format&fit=crop&w=1000&q=80',
+  },
+  {
+    id: 'banner-party',
+    badge: 'DINNER SPECIAL · DEMO PROMO',
+    title: 'Flat ₹75 OFF on North Indian & Biryani',
+    subtitle: 'Apply ZOMATO75 at checkout on orders above ₹399.',
+    code: 'ZOMATO75',
+    cta: 'Apply ZOMATO75',
+    image:
+      'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=1000&q=80',
+  },
+];
+
 export const CATEGORIES = [
   {
     id: 'Pizza',
     name: 'Pizza',
     tagline: 'Wood-fired & sourdough',
     image:
-      'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=800&q=80',
-  },
-  {
-    id: 'Biryani',
-    name: 'Biryani',
-    tagline: 'Dum-cooked aromatic rice',
-    image:
-      'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80',
   },
   {
     id: 'Burgers',
     name: 'Burgers',
     tagline: 'Smashed & brioche',
     image:
-      'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=600&q=80',
   },
   {
-    id: 'Chinese',
-    name: 'Chinese',
-    tagline: 'Wok-tossed & dim sum',
+    id: 'Biryani',
+    name: 'Biryani',
+    tagline: 'Dum-cooked aromatic rice',
     image:
-      'https://images.unsplash.com/photo-1563245372-f21724e3856d?auto=format&fit=crop&w=800&q=80',
-  },
-  {
-    id: 'South Indian',
-    name: 'South Indian',
-    tagline: 'Coastal spices & appam',
-    image:
-      'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80',
   },
   {
     id: 'North Indian',
     name: 'North Indian',
     tagline: 'Tandoor & rich curries',
     image:
-      'https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'South Indian',
+    name: 'South Indian',
+    tagline: 'Coastal spices & dosas',
+    image:
+      'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'Chinese',
+    name: 'Chinese',
+    tagline: 'Wok-tossed & dim sum',
+    image:
+      'https://images.unsplash.com/photo-1563245372-f21724e3856d?auto=format&fit=crop&w=600&q=80',
   },
   {
     id: 'Desserts',
     name: 'Desserts',
-    tagline: 'Artisanal bakes & tarts',
+    tagline: 'Tarts, mithai & gelato',
     image:
-      'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'Cakes',
+    name: 'Cakes',
+    tagline: 'Celebration & truffle slices',
+    image:
+      'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'Rolls',
+    name: 'Rolls',
+    tagline: 'Flaky parotta kathi wraps',
+    image:
+      'https://images.unsplash.com/photo-1626700051175-6818013e1d4f?auto=format&fit=crop&w=600&q=80',
   },
   {
     id: 'Healthy Food',
     name: 'Healthy Food',
     tagline: 'Grain bowls & cold-press',
     image:
-      'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=600&q=80',
   },
 ];
 
@@ -96,6 +143,7 @@ export const RESTAURANTS = [
     name: 'Forno Neapolitan Kitchen',
     cuisine: 'Pizza, Italian, Desserts',
     categories: ['Pizza', 'Desserts'],
+    isPureVeg: false,
     rating: 4.8,
     reviewCount: 1240,
     deliveryFee: 29,
@@ -116,11 +164,16 @@ export const RESTAURANTS = [
       'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1571877227200-a0d98ea607e9?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-forno-1',
         name: 'Truffle Burrata Margherita',
-        category: 'Wood-Fired Pizzas',
+        category: 'Pizza',
         description:
           '72-hour fermented sourdough crust, San Marzano tomatoes, fresh Pugliese burrata, and basil oil.',
         price: 449,
@@ -135,7 +188,7 @@ export const RESTAURANTS = [
       {
         id: 'm-forno-2',
         name: 'Diavola Pepperoni & Hot Honey',
-        category: 'Wood-Fired Pizzas',
+        category: 'Pizza',
         description:
           'Crispy cup pepperoni, fior di latte mozzarella, crushed Calabrian chili, and wildflower hot honey.',
         price: 529,
@@ -150,7 +203,7 @@ export const RESTAURANTS = [
       {
         id: 'm-forno-3',
         name: 'Garlic Rosemary Focaccia Knots',
-        category: 'Sides & Starters',
+        category: 'Starters',
         description:
           'Oven-baked olive oil dough knots tossed in roasted garlic butter and aged Parmigiano.',
         price: 219,
@@ -183,8 +236,9 @@ export const RESTAURANTS = [
     id: 'rest-2',
     slug: 'smash-craft-burger-co',
     name: 'Smash & Craft Burger Co.',
-    cuisine: 'Burgers, American, Shakes',
+    cuisine: 'Burgers, American, Beverages',
     categories: ['Burgers'],
+    isPureVeg: false,
     rating: 4.7,
     reviewCount: 980,
     deliveryFee: 0,
@@ -205,11 +259,16 @@ export const RESTAURANTS = [
       'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1576107232684-1279f390859f?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-smash-1',
         name: 'Double Smash Cheese Burger',
-        category: 'Signature Burgers',
+        category: 'Burgers',
         description:
           'Two lacy-edged seared patties, charred sweet onions, double sharp cheddar, and house pickles on toasted brioche.',
         price: 349,
@@ -224,7 +283,7 @@ export const RESTAURANTS = [
       {
         id: 'm-smash-2',
         name: 'Crispy Buttermilk Chicken Burger',
-        category: 'Signature Burgers',
+        category: 'Burgers',
         description:
           '24-hour brined crispy chicken fillet, slaw, jalapeño ranch, and dill pickles on a soft potato bun.',
         price: 319,
@@ -239,7 +298,7 @@ export const RESTAURANTS = [
       {
         id: 'm-smash-3',
         name: 'Black Truffle Parmesan Fries',
-        category: 'Sides',
+        category: 'Starters',
         description:
           'Twice-fried skin-on Russet fries with rosemary sea salt, truffle oil, and grated parmesan.',
         price: 179,
@@ -254,7 +313,7 @@ export const RESTAURANTS = [
       {
         id: 'm-smash-4',
         name: 'Salted Caramel Cold Shake',
-        category: 'Shakes & Drinks',
+        category: 'Beverages',
         description:
           'Hand-spun Madagascar vanilla bean ice cream blended with burnt caramel and sea salt.',
         price: 189,
@@ -274,10 +333,11 @@ export const RESTAURANTS = [
     name: 'Saffron & Tandoor House',
     cuisine: 'North Indian, Biryani, Mughlai',
     categories: ['North Indian', 'Biryani'],
+    isPureVeg: false,
     rating: 4.9,
     reviewCount: 2150,
     deliveryFee: 35,
-    costForTwo: 800,
+    costForTwo: 850,
     etaRange: '25–34 min',
     etaMinutes: 29,
     city: 'Mumbai',
@@ -294,11 +354,16 @@ export const RESTAURANTS = [
       'https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1565557623262-b51c2513a641?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1565557623262-b51c2513a641?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-saffron-1',
         name: 'Old Delhi Butter Chicken & Garlic Naan',
-        category: 'Signatures',
+        category: 'Main Course',
         description:
           'Charcoal-grilled chicken tikka simmered in velvety smoked tomato-fenugreek gravy, served with two tandoori garlic naans.',
         price: 429,
@@ -313,7 +378,7 @@ export const RESTAURANTS = [
       {
         id: 'm-saffron-2',
         name: 'Hyderabadi Saffron Dum Biryani',
-        category: 'Dum Biryani',
+        category: 'Biryani',
         description:
           'Aged basmati rice slow-cooked under pastry seal with caramelized onions, mint, and rosewater.',
         price: 389,
@@ -328,7 +393,7 @@ export const RESTAURANTS = [
       {
         id: 'm-saffron-3',
         name: 'Smoked Paneer Tikka Masala Bowl',
-        category: 'Vegetarian Mains',
+        category: 'Main Course',
         description:
           'Clay-oven roasted cottage cheese cubes in spiced makhani sauce with jeera pulao.',
         price: 339,
@@ -363,6 +428,7 @@ export const RESTAURANTS = [
     name: 'Verda Kitchen & Bowls',
     cuisine: 'Healthy Food, Salads, Juices',
     categories: ['Healthy Food'],
+    isPureVeg: true,
     rating: 4.8,
     reviewCount: 740,
     deliveryFee: 19,
@@ -375,7 +441,7 @@ export const RESTAURANTS = [
     address: 'Road No. 36, Jubilee Hills, Hyderabad',
     openHours: '8:30 AM – 10:30 PM',
     offer: '40% OFF up to ₹80',
-    badge: 'Pure Veg Options',
+    badge: 'Pure Veg',
     diningOut: false,
     featured: true,
     recommended: true,
@@ -383,11 +449,16 @@ export const RESTAURANTS = [
       'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1610970881699-44a5587cabec?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-verda-1',
         name: 'Mediterranean Avocado Quinoa Bowl',
-        category: 'Harvest Bowls',
+        category: 'Recommended',
         description:
           'Tri-color quinoa, roasted sweet potato, Hass avocado, spiced chickpeas, baby kale, and lemon-tahini dressing.',
         price: 349,
@@ -401,13 +472,13 @@ export const RESTAURANTS = [
       },
       {
         id: 'm-verda-2',
-        name: 'Teriyaki Salmon & Edamame Poke',
-        category: 'Protein Bowls',
+        name: 'Roasted Paneer & Herb Millet Bowl',
+        category: 'Main Course',
         description:
-          'Pan-seared Atlantic salmon, forbidden black rice, pickled ginger, cucumber ribbons, and sesame.',
-        price: 479,
+          'Char-grilled cottage cheese, warm foxtail millet, charred peppers, and cilantro cashew pesto.',
+        price: 379,
         rating: 4.7,
-        isVeg: false,
+        isVeg: true,
         popular: true,
         bestseller: false,
         orderType: 'Meal',
@@ -417,7 +488,7 @@ export const RESTAURANTS = [
       {
         id: 'm-verda-3',
         name: 'Green Matcha & Spinach Cold-Press',
-        category: 'Cold-Pressed Juices',
+        category: 'Beverages',
         description:
           'Baby spinach, green apple, cucumber, ginger root, and ceremonial matcha.',
         price: 169,
@@ -437,6 +508,7 @@ export const RESTAURANTS = [
     name: 'Jade Wok & Dim Sum',
     cuisine: 'Chinese, Asian, Noodles',
     categories: ['Chinese'],
+    isPureVeg: false,
     rating: 4.6,
     reviewCount: 830,
     deliveryFee: 29,
@@ -457,11 +529,16 @@ export const RESTAURANTS = [
       'https://images.unsplash.com/photo-1563245372-f21724e3856d?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1525755662778-989d0524087e?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1563245372-f21724e3856d?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1552611052-33e04de081de?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1525755662778-989d0524087e?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-jade-1',
         name: 'Chili Oil Crystal Prawn Dumplings',
-        category: 'Dim Sum',
+        category: 'Starters',
         description:
           'Six hand-pleated translucent dumplings bathed in aromatic Sichuan chili crisp and black vinegar.',
         price: 329,
@@ -476,7 +553,7 @@ export const RESTAURANTS = [
       {
         id: 'm-jade-2',
         name: 'Wok-Tossed Dan Dan Noodles',
-        category: 'Noodles & Rice',
+        category: 'Main Course',
         description:
           'Hand-pulled wheat noodles with sesame-peanut sauce, pickled mustard greens, and scallions.',
         price: 299,
@@ -491,7 +568,7 @@ export const RESTAURANTS = [
       {
         id: 'm-jade-3',
         name: 'Crispy Kung Pao Tofu & Cashews',
-        category: 'Wok Mains',
+        category: 'Main Course',
         description:
           'Velveted silken tofu wok-seared with bell peppers, roasted cashews, and aged black bean glaze.',
         price: 289,
@@ -509,8 +586,9 @@ export const RESTAURANTS = [
     id: 'rest-6',
     slug: 'maison-sucre-patisserie',
     name: 'Maison Sucré Patisserie',
-    cuisine: 'Desserts, Bakery, Cakes',
-    categories: ['Desserts'],
+    cuisine: 'Cakes, Desserts, Bakery',
+    categories: ['Cakes', 'Desserts'],
+    isPureVeg: true,
     rating: 4.9,
     reviewCount: 615,
     deliveryFee: 25,
@@ -523,22 +601,27 @@ export const RESTAURANTS = [
     address: 'Lane 7, Koregaon Park, Pune',
     openHours: '9:00 AM – 11:00 PM',
     offer: 'FLAT ₹50 OFF',
-    badge: 'Under 20 min',
+    badge: 'Pure Veg · Under 20 min',
     diningOut: true,
     featured: false,
     recommended: false,
     image:
-      'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1565958011703-44f9829ba187?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=800&q=80',
+      'https://images.unsplash.com/photo-1565958011703-44f9829ba187?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-sucre-1',
-        name: 'Belgian 70% Dark Chocolate Tart',
-        category: 'Tarts & Cakes',
+        name: 'Belgian 70% Dark Chocolate Cake (500g)',
+        category: 'Cakes',
         description:
-          'Crisp cocoa sablé shell filled with glossy Valrhona dark chocolate ganache and flaky sea salt.',
-        price: 239,
+          'Three moist cocoa sponge layers finished with glossy Valrhona dark chocolate ganache and flaky sea salt.',
+        price: 549,
         rating: 4.9,
         isVeg: true,
         popular: true,
@@ -550,7 +633,7 @@ export const RESTAURANTS = [
       {
         id: 'm-sucre-2',
         name: 'Glazed Brioche Donut Trio',
-        category: 'Artisanal Pastries',
+        category: 'Desserts',
         description:
           'Madagascar vanilla glaze, dark chocolate hazelnut, and raspberry pistachio brioche rings.',
         price: 269,
@@ -565,7 +648,7 @@ export const RESTAURANTS = [
       {
         id: 'm-sucre-3',
         name: 'Strawberry Basque Cheesecake Slice',
-        category: 'Tarts & Cakes',
+        category: 'Cakes',
         description:
           'Caramelized crust with creamy custard center topped with macerated Mahabaleshwar berries.',
         price: 259,
@@ -585,6 +668,7 @@ export const RESTAURANTS = [
     name: 'Brooklyn Slice & Pie Co.',
     cuisine: 'Pizza, Burgers, Fast Food',
     categories: ['Pizza', 'Burgers'],
+    isPureVeg: false,
     rating: 4.5,
     reviewCount: 510,
     deliveryFee: 0,
@@ -605,11 +689,15 @@ export const RESTAURANTS = [
       'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1604382354936-07c5d9983bd3?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1604382354936-07c5d9983bd3?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-bk-1',
         name: '18" Grand Vodka Pesto Pie',
-        category: 'Whole Pies',
+        category: 'Pizza',
         description:
           'Foldable NY-style crust topped with creamy tomato vodka sauce, basil pesto swirl, and aged mozzarella.',
         price: 549,
@@ -624,7 +712,7 @@ export const RESTAURANTS = [
       {
         id: 'm-bk-2',
         name: 'Smoky BBQ Chicken Pizza',
-        category: 'Whole Pies',
+        category: 'Pizza',
         description:
           'Charred pulled chicken, red onion rings, smoked gouda, and hickory barbecue drizzle.',
         price: 499,
@@ -644,6 +732,7 @@ export const RESTAURANTS = [
     name: 'Malabar Spice Republic',
     cuisine: 'South Indian, Biryani, Coastal',
     categories: ['South Indian', 'Biryani'],
+    isPureVeg: false,
     rating: 4.7,
     reviewCount: 685,
     deliveryFee: 29,
@@ -664,11 +753,15 @@ export const RESTAURANTS = [
       'https://images.unsplash.com/photo-1589302168068-964664d93dc0?auto=format&fit=crop&w=1000&q=80',
     heroImage:
       'https://images.unsplash.com/photo-1589302168068-964664d93dc0?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1589302168068-964664d93dc0?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=800&q=80',
+    ],
     menu: [
       {
         id: 'm-mal-1',
         name: 'Ghee Roast Chicken & Malabar Parotta',
-        category: 'Coastal Classics',
+        category: 'Main Course',
         description:
           'Slow-roasted spiced chicken tossed in clarified butter and curry leaves with two flaky parottas.',
         price: 379,
@@ -683,7 +776,7 @@ export const RESTAURANTS = [
       {
         id: 'm-mal-2',
         name: 'Appam & Coconut Vegetable Stew',
-        category: 'Coastal Classics',
+        category: 'Recommended',
         description:
           'Lacy fermented rice hoppers paired with creamy ginger-coconut milk vegetable stew.',
         price: 269,
@@ -694,6 +787,133 @@ export const RESTAURANTS = [
         orderType: 'Meal',
         image:
           'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=700&q=80',
+      },
+    ],
+  },
+  {
+    id: 'rest-9',
+    slug: 'bombay-kathi-roll-express',
+    name: 'Bombay Kathi Roll Express',
+    cuisine: 'Rolls, Street Food, North Indian',
+    categories: ['Rolls', 'North Indian'],
+    isPureVeg: false,
+    rating: 4.6,
+    reviewCount: 1120,
+    deliveryFee: 0,
+    costForTwo: 350,
+    etaRange: '14–21 min',
+    etaMinutes: 18,
+    city: 'Mumbai',
+    modelCity: 'Metropolitian',
+    coordinates: { lat: 19.0642, lng: 72.8358 },
+    address: 'Linking Road, Bandra West, Mumbai',
+    openHours: '11:00 AM – 2:00 AM',
+    offer: 'Free Delivery',
+    badge: 'Quick Bite',
+    diningOut: false,
+    featured: true,
+    recommended: false,
+    image:
+      'https://images.unsplash.com/photo-1626700051175-6818013e1d4f?auto=format&fit=crop&w=1000&q=80',
+    heroImage:
+      'https://images.unsplash.com/photo-1626700051175-6818013e1d4f?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1626700051175-6818013e1d4f?auto=format&fit=crop&w=1000&q=80',
+      'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=800&q=80',
+    ],
+    menu: [
+      {
+        id: 'm-roll-1',
+        name: 'Double Egg Chicken Tikka Kathi Roll',
+        category: 'Rolls',
+        description:
+          'Char-grilled chicken tikka, spiced pickled onions, mint chutney, and double egg wrapped in flaky lachha paratha.',
+        price: 229,
+        rating: 4.7,
+        isVeg: false,
+        popular: true,
+        bestseller: true,
+        orderType: 'Snack',
+        image:
+          'https://images.unsplash.com/photo-1626700051175-6818013e1d4f?auto=format&fit=crop&w=700&q=80',
+      },
+      {
+        id: 'm-roll-2',
+        name: 'Smoked Paneer Makhani Wrap',
+        category: 'Rolls',
+        description:
+          'Tandoor cottage cheese cubes with capsicum crunch and creamy makhani glaze in warm paratha.',
+        price: 199,
+        rating: 4.5,
+        isVeg: true,
+        popular: false,
+        bestseller: true,
+        orderType: 'Snack',
+        image:
+          'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=700&q=80',
+      },
+    ],
+  },
+  {
+    id: 'rest-10',
+    slug: 'udupi-sagar-pure-veg',
+    name: 'Udupi Sagar Pure Veg',
+    cuisine: 'South Indian, Beverages, Pure Veg',
+    categories: ['South Indian'],
+    isPureVeg: true,
+    rating: 4.7,
+    reviewCount: 1640,
+    deliveryFee: 15,
+    costForTwo: 350,
+    etaRange: '16–22 min',
+    etaMinutes: 19,
+    city: 'Bengaluru',
+    modelCity: 'Metropolitian',
+    coordinates: { lat: 12.9766, lng: 77.5993 },
+    address: 'MG Road Metro Plaza, Bengaluru',
+    openHours: '7:00 AM – 10:30 PM',
+    offer: '20% OFF up to ₹50',
+    badge: 'Pure Veg',
+    diningOut: true,
+    featured: false,
+    recommended: true,
+    image:
+      'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=1000&q=80',
+    heroImage:
+      'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=1400&q=80',
+    gallery: [
+      'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=1000&q=80',
+    ],
+    menu: [
+      {
+        id: 'm-udupi-1',
+        name: 'Mysore Ghee Masala Dosa',
+        category: 'Recommended',
+        description:
+          'Crisp golden rice crepe lined with spicy red garlic chutney and potato palya, served with sambar & coconut chutney.',
+        price: 169,
+        rating: 4.8,
+        isVeg: true,
+        popular: true,
+        bestseller: true,
+        orderType: 'Meal',
+        image:
+          'https://images.unsplash.com/photo-1630383249896-424e482df921?auto=format&fit=crop&w=700&q=80',
+      },
+      {
+        id: 'm-udupi-2',
+        name: 'Madras Filter Kaapi Flask (250ml)',
+        category: 'Beverages',
+        description:
+          'Authentic Chikmagalur decoction whipped with frothed farm milk in spill-proof flask.',
+        price: 119,
+        rating: 4.9,
+        isVeg: true,
+        popular: false,
+        bestseller: true,
+        orderType: 'Drinks',
+        image:
+          'https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=700&q=80',
       },
     ],
   },

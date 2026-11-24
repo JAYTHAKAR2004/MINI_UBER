@@ -5,27 +5,20 @@ export default function Footer() {
   return (
     <footer className="border-t border-neutral-200 bg-surface-soft text-brand-black">
       <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8">
-        <div className="grid gap-10 md:grid-cols-4">
-          <div className="md:col-span-2">
+        <div className="grid gap-10 sm:grid-cols-2 md:grid-cols-4">
+          <div className="sm:col-span-2">
             <BrandLogo />
             <p className="mt-4 max-w-md text-sm leading-relaxed text-neutral-600">
-              Order online from top local restaurants with real-time delivery
-              ETA predictions powered by our{' '}
-              <strong className="text-brand-black">Mini-Uber-ETA</strong>{' '}
-              Random Forest Machine Learning platform.
+              Explore restaurants, menus, cart, interactive maps, and live ML delivery ETA forecasts built on the{' '}
+              <strong className="text-brand-black">Mini-Uber-ETA</strong> Random Forest platform.
             </p>
           </div>
 
           <div>
             <h3 className="font-display text-xs font-bold uppercase tracking-wider text-neutral-500">
-              Food Ordering
+              For Customers
             </h3>
             <ul className="mt-4 space-y-2.5 text-sm text-neutral-700">
-              <li>
-                <Link to="/" className="hover:text-brand-primary">
-                  Home
-                </Link>
-              </li>
               <li>
                 <Link to="/restaurants" className="hover:text-brand-primary">
                   Order Online
@@ -41,7 +34,7 @@ export default function Footer() {
               </li>
               <li>
                 <Link to="/cart" className="hover:text-brand-primary">
-                  Your Cart
+                  Shopping Cart
                 </Link>
               </li>
               <li>
@@ -49,22 +42,27 @@ export default function Footer() {
                   Track Order
                 </Link>
               </li>
+              <li>
+                <Link to="/profile" className="hover:text-brand-primary">
+                  Account &amp; Addresses
+                </Link>
+              </li>
             </ul>
           </div>
 
           <div>
             <h3 className="font-display text-xs font-bold uppercase tracking-wider text-neutral-500">
-              Project &amp; ETA Engine
+              ETA Platform
             </h3>
             <ul className="mt-4 space-y-2.5 text-sm text-neutral-700">
               <li>
                 <Link to="/predict" className="hover:text-brand-primary">
-                  AI Delivery ETA Prediction
+                  Live AI Delivery ETA
                 </Link>
               </li>
               <li>
                 <Link to="/analytics" className="hover:text-brand-primary">
-                  ML Analytics Dashboard
+                  ML Performance Analytics
                 </Link>
               </li>
               <li>
@@ -78,11 +76,14 @@ export default function Footer() {
 
         <div className="mt-10 flex flex-col items-start justify-between gap-3 border-t border-neutral-200 pt-6 text-xs text-neutral-500 sm:flex-row sm:items-center">
           <p>
-            Academic project UI for <strong>Mini-Uber-ETA</strong> inspired by
-            Zomato. Not affiliated with Zomato. Restaurant menus, payments &amp;
-            order tracking use demo data; ETA predictions connect live to FastAPI.
+            Independent academic project UI for <strong>Mini-Uber-ETA</strong>{' '}
+            inspired by Zomato. Not affiliated with Zomato. Restaurant menus,
+            demo accounts &amp; courier movement are simulated; ML ETA connects
+            live to FastAPI.
           </p>
-          <p className="font-mono text-neutral-500">Mini-Uber-ETA · Random Forest</p>
+          <p className="font-mono text-neutral-500">
+            Mini-Uber-ETA · Random Forest
+          </p>
         </div>
       </div>
     </footer>

@@ -1,8 +1,20 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { CITY_PRESETS } from '../utils/haversine';
 
-const STORAGE_KEY = 'mini_uber_location_v1';
+const STORAGE_KEY = 'mini_uber_location_v2';
 const LocationContext = createContext(null);
+
+function inferModelCity(cityName = '') {
+  const normalized = cityName.toLowerCase();
+  if (
+    ['bengaluru', 'bangalore', 'mumbai', 'hyderabad', 'delhi', 'new delhi', 'chennai', 'kolkata'].some(
+      (c) => normalized.includes(c)
+    )
+  ) {
+    return 'Metropolitian';
+  }
+  return 'Urban';
+}
 
 export function LocationProvider({ children }) {
   const [locationState, setLocationState] = useState(() => {
@@ -18,6 +30,9 @@ export function LocationProvider({ children }) {
       shortName: initial.shortName,
       modelCity: initial.modelCity,
       address: initial.defaultAddress,
+      lat: initial.deliveryLat,
+      lng: initial.deliveryLon,
+      source: 'preset',
     };
   });
 
@@ -37,6 +52,9 @@ export function LocationProvider({ children }) {
       shortName: preset.shortName,
       modelCity: preset.modelCity,
       address: preset.defaultAddress,
+      lat: preset.deliveryLat,
+      lng: preset.deliveryLon,
+      source: 'preset',
     });
   };
 
@@ -44,6 +62,26 @@ export function LocationProvider({ children }) {
     setLocationState((prev) => ({
       ...prev,
       address,
+    }));
+  };
+
+  const setCustomLocation = ({
+    shortName,
+    address,
+    lat,
+    lng,
+    modelCity,
+    cityId,
+    source = 'map',
+  }) => {
+    setLocationState((prev) => ({
+      cityId: cityId || prev.cityId,
+      shortName: shortName || prev.shortName,
+      modelCity: modelCity || inferModelCity(shortName || prev.shortName),
+      address: address || prev.address,
+      lat: Number.isFinite(Number(lat)) ? Number(lat) : prev.lat,
+      lng: Number.isFinite(Number(lng)) ? Number(lng) : prev.lng,
+      source,
     }));
   };
 
@@ -57,6 +95,7 @@ export function LocationProvider({ children }) {
         activePreset,
         selectCityPreset,
         setCustomAddress,
+        setCustomLocation,
       }}
     >
       {children}
@@ -71,4 +110,3 @@ export function useLocationContext() {
   }
   return ctx;
 }
-

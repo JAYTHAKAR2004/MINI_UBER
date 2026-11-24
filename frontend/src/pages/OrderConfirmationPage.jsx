@@ -5,13 +5,35 @@ import {
   CheckCircle2,
   Clock,
   MapPin,
+  ShieldCheck,
   Sparkles,
   Store,
   Truck,
 } from 'lucide-react';
-import { useOrders } from '../context/OrderContext';
+import { ORDER_STAGES, useOrders } from '../context/OrderContext';
+import { FINAL_TEST_METRICS } from '../data/analyticsBaseline';
 import { formatPrice, formatTimestamp } from '../utils/formatters';
 import VegBadge from '../components/VegBadge';
+import DeliveryTrackingMap from '../components/maps/DeliveryTrackingMap';
+
+function formatPaymentBadge(order) {
+  if (order.paymentStatus === 'PAID_TEST') {
+    return {
+      label: `Razorpay Test Verified (${order.razorpayPaymentId || 'Test'})`,
+      className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    };
+  }
+  if (order.paymentStatus === 'COD_DEMO') {
+    return {
+      label: 'Cash on Delivery (Demo)',
+      className: 'bg-surface-soft text-neutral-700 border-neutral-200',
+    };
+  }
+  return {
+    label: 'Demo Checkout Order (No Real Charge)',
+    className: 'bg-amber-50 text-amber-800 border-amber-200',
+  };
+}
 
 export default function OrderConfirmationPage() {
   const { orderId } = useParams();
@@ -43,10 +65,17 @@ export default function OrderConfirmationPage() {
     );
   }
 
+  const paymentBadge = formatPaymentBadge(order);
+  const etaLow = Math.max(
+    5,
+    Math.round(order.etaMinutes - FINAL_TEST_METRICS.mae)
+  );
+  const etaHigh = Math.round(order.etaMinutes + FINAL_TEST_METRICS.mae);
+
   return (
-    <div className="mx-auto max-w-4xl px-4 py-10 sm:px-6 lg:px-8">
-      {/* Confirmation Banner */}
-      <div className="rounded-3xl border border-emerald-200 bg-white p-7 shadow-card sm:p-9">
+    <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
+      {/* Confirmation Card */}
+      <div className="rounded-3xl border border-emerald-200 bg-white p-6 shadow-card sm:p-8">
         <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
           <div className="flex items-center gap-4">
             <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
@@ -57,15 +86,21 @@ export default function OrderConfirmationPage() {
                 <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-700">
                   Order Confirmed
                 </span>
-                <span className="rounded-full bg-surface-soft px-2.5 py-0.5 text-[11px] font-medium text-neutral-500">
-                  Academic Demo Order
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${paymentBadge.className}`}
+                >
+                  <ShieldCheck className="h-3 w-3" />
+                  {paymentBadge.label}
                 </span>
               </div>
               <h1 className="mt-1.5 font-display text-2xl font-extrabold text-brand-black sm:text-3xl">
                 Thank you, {order.customerName || 'Customer'}!
               </h1>
               <p className="mt-0.5 text-xs text-neutral-500">
-                Order ID <strong className="font-mono text-brand-black">{order.id}</strong>{' '}
+                Order ID{' '}
+                <strong className="font-mono text-brand-black">
+                  {order.id}
+                </strong>{' '}
                 · Confirmed {formatTimestamp(order.createdAt)}
               </p>
             </div>
@@ -73,40 +108,60 @@ export default function OrderConfirmationPage() {
 
           <div className="rounded-2xl bg-brand-primarySoft px-4 py-3 text-left sm:text-right">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-brand-primaryDark">
-              Estimated Delivery
+              Estimated Arrival
             </p>
             <p className="mt-0.5 flex items-center gap-1.5 font-display text-2xl font-extrabold text-brand-black tabular-nums sm:justify-end">
               <Clock className="h-5 w-5 text-brand-primary" />
               {order.etaMinutes} min
             </p>
             <p className="text-[11px] text-neutral-600">
-              {order.etaSource === 'live-ml'
-                ? 'Predicted by Random Forest ML'
-                : 'Restaurant baseline estimate'}
+              Window: {etaLow}–{etaHigh} min ({order.etaSource === 'live-ml' ? 'Random Forest AI' : 'Kitchen Estimate'})
             </p>
           </div>
         </div>
 
-        {/* Prominent AI ETA CTA */}
-        <div className="mt-7 flex flex-col gap-3 rounded-2xl border border-brand-primaryBorder bg-brand-primarySoft/60 p-5 sm:flex-row sm:items-center sm:justify-between">
+        {/* Interactive Tracking Map Preview */}
+        <div className="mt-6">
+          <DeliveryTrackingMap
+            restaurantName={order.restaurant?.name}
+            restaurantCoords={order.restaurantCoordinates || { lat: 12.9716, lng: 77.5946 }}
+            deliveryCoords={order.deliveryCoordinates || { lat: 12.9855, lng: 77.6412 }}
+            deliveryLabel={order.deliveryAddress}
+            etaMinutes={order.etaMinutes}
+            stageIndex={order.stageIndex ?? 1}
+            stageLabel={ORDER_STAGES[order.stageIndex ?? 1]}
+            showPartner
+            heightClass="h-64"
+          />
+        </div>
+
+        {/* Actions */}
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-brand-primaryBorder bg-brand-primarySoft/60 p-4 sm:p-5">
           <div>
             <p className="font-display text-base font-bold text-brand-black">
-              Explore live AI delivery prediction for {order.id}
+              Track your delivery in real time
             </p>
-            <p className="mt-0.5 text-xs text-neutral-600">
-              View live order progress and fine-tune traffic, weather, and route
-              conditions with our Random Forest ETA model.
+            <p className="text-xs text-neutral-600">
+              Follow the 7-stage delivery timeline or explore custom traffic &amp; weather ETA scenarios.
             </p>
           </div>
-
-          <Link
-            to={`/predict/${order.id}`}
-            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-primary px-6 py-3.5 text-sm font-bold text-white shadow-soft transition-colors hover:bg-brand-primaryDark"
-          >
-            <Sparkles className="h-4 w-4" />
-            View AI Delivery Prediction
-            <ArrowRight className="h-4 w-4" />
-          </Link>
+          <div className="flex flex-wrap gap-2.5">
+            <Link
+              to={`/track/${order.id}`}
+              className="inline-flex items-center gap-2 rounded-xl bg-brand-primary px-5 py-3 text-sm font-bold text-white shadow-soft hover:bg-brand-primaryDark"
+            >
+              <Truck className="h-4 w-4" />
+              Track Order
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+            <Link
+              to={`/predict/${order.id}`}
+              className="inline-flex items-center gap-2 rounded-xl border border-neutral-300 bg-white px-4 py-3 text-xs font-bold text-brand-black hover:bg-surface-soft"
+            >
+              <Sparkles className="h-4 w-4 text-brand-primary" />
+              AI ETA Controls
+            </Link>
+          </div>
         </div>
 
         {/* Order Details Grid */}
@@ -135,15 +190,14 @@ export default function OrderConfirmationPage() {
               <p className="mt-1.5 text-sm font-medium text-brand-black">
                 {order.deliveryAddress}
               </p>
-              {order.instructions && (
+              {order.deliveryInstructions && (
                 <p className="mt-1 text-xs text-neutral-500">
-                  Note: {order.instructions}
+                  Instructions: {order.deliveryInstructions}
                 </p>
               )}
             </div>
           </div>
 
-          {/* Items & Total */}
           <div className="rounded-2xl border border-neutral-200 p-4">
             <h2 className="font-display text-sm font-bold text-brand-black">
               Ordered Items ({order.items?.length || 0})
@@ -171,27 +225,10 @@ export default function OrderConfirmationPage() {
             </ul>
 
             <div className="mt-3 flex justify-between border-t border-neutral-200 pt-3 text-sm font-extrabold text-brand-black">
-              <span>Total Amount</span>
+              <span>Total Paid</span>
               <span className="tabular-nums">{formatPrice(order.total)}</span>
             </div>
           </div>
-        </div>
-
-        {/* Secondary Actions */}
-        <div className="mt-7 flex flex-wrap items-center justify-between gap-3 border-t border-neutral-100 pt-5">
-          <Link
-            to={`/track/${order.id}`}
-            className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white px-4 py-2.5 text-xs font-semibold text-brand-black hover:bg-surface-soft"
-          >
-            <Truck className="h-4 w-4 text-brand-primary" />
-            Track Order Status
-          </Link>
-          <Link
-            to="/restaurants"
-            className="text-xs font-semibold text-neutral-600 hover:text-brand-primary"
-          >
-            Order more food →
-          </Link>
         </div>
       </div>
     </div>

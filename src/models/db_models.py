@@ -20,3 +20,28 @@ class ETAPrediction(Base):
         default=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+
+class CustomerOrder(Base):
+    __tablename__ = "customer_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_code = Column(String(64), unique=True, index=True, nullable=False)
+    idempotency_key = Column(String(128), unique=True, index=True, nullable=True)
+    restaurant_name = Column(String(200), nullable=False)
+    customer_name = Column(String(150), nullable=False)
+    customer_phone = Column(String(40), nullable=False)
+    delivery_address = Column(String(500), nullable=False)
+    items = Column(JSON, nullable=False)
+    amount_inr = Column(Float, nullable=False)
+    predicted_eta_minutes = Column(Float, nullable=True)
+    payment_method = Column(String(64), nullable=False)
+    payment_status = Column(String(32), nullable=False, default="PENDING")
+    order_status = Column(String(64), nullable=False, default="Order placed")
+    razorpay_order_id = Column(String(128), unique=True, index=True, nullable=True)
+    razorpay_payment_id = Column(String(128), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
