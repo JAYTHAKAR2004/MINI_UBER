@@ -5,9 +5,9 @@
 
 **Mini-Uber-ETA** is a full-stack, real-time food delivery Estimated Time of Arrival (ETA) prediction platform combining supervised machine learning (`scikit-learn` Random Forest), FastAPI REST and Strawberry GraphQL APIs, Redis caching with a thread-safe circuit breaker, Redpanda (Kafka-compatible) event streaming, PostgreSQL persistence, three load-balanced API instances behind Nginx, Docker Compose orchestration, and GitHub Actions CI/CD.
 
-The frontend provides a **Zomato-inspired food ordering interface** built as an academic demonstration so users can browse demo restaurants, customize menus, add items to a cart, place simulated orders, track order stages, and invoke live ML ETA predictions against the running backend stack.
+The frontend provides a **Zomato-inspired food ordering interface** built as an academic demonstration so users can browse demo restaurants, customize menus, add items to a cart, test sandbox **Razorpay Test Mode** or **Cash on Delivery (Demo)** checkouts, track order stages, and invoke live ML ETA predictions against the running backend stack.
 
-> **Academic Project Disclaimer:** Mini-Uber-ETA is an independent academic and technical portfolio project. The Zomato-inspired frontend styling is strictly for UI demonstration; this project is not affiliated with, endorsed by, or connected to Zomato. Restaurant catalogs, menus, carts, and checkout flows run locally in the browser as demo UI (`localStorage`), whereas ETA predictions, caching, database writes, and Kafka events execute live against the backend.
+> **Academic Project Disclaimer:** Mini-Uber-ETA is an independent academic and technical portfolio project. The Zomato-inspired frontend styling is strictly for UI demonstration; this project is not affiliated with, endorsed by, or connected to Zomato. Restaurant catalogs and menus run as demo UI (`localStorage`), whereas ETA predictions, caching, customer order persistence (`customer_orders`), Razorpay Test Mode order creation/HMAC verification, and Kafka events execute live against the backend.
 
 ---
 
@@ -49,16 +49,16 @@ Mini-Uber-ETA addresses this end-to-end across three layers:
 ### Frontend (React + Vite)
 - **Restaurant Discovery & Filtering**: Browse demo restaurants across Indian cities (Bengaluru, Mumbai, Hyderabad, Pune, New Delhi) with search, cuisine/category filters, Veg/Non-Veg toggles, and Dining Out filtering.
 - **Restaurant Menus & Cart Management**: Interactive dish selection, quantity controls, promo code application, persistent `localStorage` cart, and slide-over cart drawer.
-- **Demo Checkout & Order Tracking**: Academic demo checkout (no payment gateway) followed by an order confirmation screen and an interactive 5-stage order progress tracker (`Order confirmed` → `Restaurant preparing food` → `Pickup` → `Out for delivery` → `Delivered`).
+- **Razorpay Test Mode Checkout & Order Tracking**: Integrated **Razorpay Test Mode** checkout (branded `Zomato` / `Zomato AI Food Delivery` with `/zomato-logo.png`) supporting simulated **Cards** (Visa, Mastercard, RuPay, Maestro), **Net Banking**, **Wallets** (Airtel Money, MobiKwik, PayZapp), **Pay Later** (Amazon Pay, LazyPay), and **UPI ID / VPA Collect** (`success@razorpay` / `failure@razorpay`), alongside **Cash on Delivery (Demo)** (`COD_DEMO`). Test Mode suppresses unscannable sandbox UPI QR codes while keeping UPI QR available for Live Mode; optional YouPI-PG self-hosted gateway code (`docs/YOUPI_PG_INTEGRATION.md`) is preserved in a disabled, fail-closed state by default. Followed by an interactive order confirmation screen (displaying payment status, Order ID, Razorpay Order ID, and Razorpay Payment ID) and a 7-stage order progress tracker.
 - **Live AI ETA Prediction Page (`/predict`)**: Auto-calculates Haversine route distance and India-bounds validity, validates all 17 model inputs, calls `POST /predict`, displays the Random Forest forecast alongside an expected arrival window (`MAE ±3.21 min`), and surfaces Redis cache, PostgreSQL, and Kafka status.
 - **Analytics & System Status Pages**: Visualizes offline ML comparison metrics (`reports/validation_model_comparison.csv`, `reports/final_test_metrics.csv`), live session `/predict` telemetry, `/health` round-robin replica distribution across `api1`/`api2`/`api3`, and `/graphql` status.
 
 ### Backend, Data & Infrastructure
-- **FastAPI REST API (`src/api/main.py`)**: Inference (`POST /predict`), health (`GET /health`), root metadata (`GET /`), and prediction record CRUD handlers (`GET /predictions`, `GET /predictions/{prediction_id}`, `PATCH /predictions/{prediction_id}`, `DELETE /predictions/{prediction_id}` in the current workspace source).
+- **FastAPI REST API (`src/api/main.py`)**: Inference (`POST /predict`), health (`GET /health`), root metadata (`GET /`), prediction CRUD (`GET/PATCH/DELETE /predictions`), customer order storage (`POST/GET /orders`), and **Razorpay Test Mode** order creation and server-side HMAC-SHA256 signature verification (`GET /payments/razorpay/config`, `POST /payments/razorpay/order`, `POST /payments/razorpay/verify`). Optional fail-closed YouPI-PG endpoints (`src/payments/youpi_service.py`) remain inactive unless explicitly configured.
 - **Strawberry GraphQL API (`src/api/graphql_schema.py`)**: Mounted at `/graphql` exposing `hello`, `projectInfo`, and `health` queries.
 - **Redis Caching (`redis:7-alpine`)**: Deterministic SHA-256 cache key (`eta:rf-v1:<hash>`) with a `300s` TTL and `HIT`/`MISS`/`BYPASS` reporting.
 - **Kafka-Compatible Event Streaming (`redpandadata/redpanda`)**: Producer publishes `ETA_PREDICTION_CREATED` events to the `eta-predictions` topic; standalone consumer (`src/kafka/consumer.py`) reads with `group.id="eta-analytics-consumer"`, exponential backoff retries, and manual synchronous offset commits.
-- **PostgreSQL Persistence (`postgres:16-bookworm`)**: Stores prediction inputs, predicted ETA, model name, and UTC timestamp in the `eta_predictions` table via SQLAlchemy (`src/models/db_models.py`) and `psycopg`.
+- **PostgreSQL Persistence (`postgres:16-bookworm`)**: Stores prediction records (`eta_predictions`) and customer/payment orders (`customer_orders`) via SQLAlchemy (`src/models/db_models.py`) and `psycopg`.
 - **Heterogeneous Data Ingestion (`src/pipeline/etl.py`)**: Supports `.csv`, `.json`, `.jsonl`, and `.parquet` / `.pq` inputs with schema/coordinate validation and missing-value reporting (`reports/etl_missing_values.csv`).
 - **Nginx Round-Robin Load Balancing (`nginx/nginx.conf`)**: Distributes traffic across `api1:8000`, `api2:8000`, and `api3:8000`.
 - **Fault Tolerance (`src/resilience/circuit_breaker.py`)**: Thread-safe `CLOSED`/`OPEN`/`HALF_OPEN` circuit breaker guarding Redis operations plus producer delivery timeouts and consumer retry logic.
@@ -197,9 +197,9 @@ Create the root `.env` file from `.env.example`:
 cp .env.example .env
 ```
 
-Verified variables in `.env.example`:
+Verified variables in `.env.example` (keep all API secrets strictly server-side in `.env`, never in `frontend/`):
 ```env
-APP_NAME=Mini-Uber-ETA
+APP_NAME=Zomato
 APP_ENV=development
 DEBUG=true
 
@@ -218,6 +218,20 @@ KAFKA_LOCATION_TOPIC=location_events
 
 API_HOST=0.0.0.0
 API_PORT=8000
+
+# Razorpay Test Mode (Optional - never expose RAZORPAY_KEY_SECRET in frontend)
+RAZORPAY_KEY_ID=
+RAZORPAY_KEY_SECRET=
+
+# YouPI-PG Self-Hosted UPI Gateway (optional, disabled by default; see docs/YOUPI_PG_INTEGRATION.md)
+YOUPI_API_URL=http://localhost:6100
+YOUPI_CHECKOUT_URL=http://localhost:7000
+YOUPI_MERCHANT_ID=
+YOUPI_MERCHANT_API_KEY=
+YOUPI_WEBHOOK_SECRET=
+YOUPI_UPI_METHOD=MANUAL_UPI
+YOUPI_WEBHOOK_TOLERANCE_SECONDS=300
+YOUPI_RECONCILE_ADMIN_TOKEN=
 ```
 
 Configure the frontend environment in `frontend/.env` from `frontend/.env.example`:
@@ -427,6 +441,13 @@ Powered by Strawberry GraphQL (`src/api/graphql_schema.py`).
 }
 ```
 
+### 5. Payments & Customer Orders (Razorpay Test Mode & Demo COD)
+- **`GET /payments/razorpay/config`**: Reports `{ "configured": true, "mode": "test", "key_id": "rzp_test_..." }` without exposing `RAZORPAY_KEY_SECRET`.
+- **`POST /payments/razorpay/order`**: Creates a `PENDING` order in PostgreSQL `customer_orders` and initializes a Razorpay order via `https://api.razorpay.com/v1/orders` with idempotency-key support.
+- **`POST /payments/razorpay/verify`**: Verifies `HMAC-SHA256(razorpay_order_id|razorpay_payment_id, RAZORPAY_KEY_SECRET)` in constant time (`hmac.compare_digest`), transitioning valid orders to `PAID_TEST` / `"Restaurant confirmed"` and marking invalid signatures `FAILED` (`400 Bad Request`).
+- **`POST /orders` & `GET /orders`**: Persists and lists customer orders (including `COD_DEMO` orders).
+- **Optional YouPI-PG Integration**: Disabled by default; architecture and legal/compliance notes are documented in [`docs/YOUPI_PG_INTEGRATION.md`](docs/YOUPI_PG_INTEGRATION.md).
+
 ---
 
 ## Fault Tolerance and Reliability
@@ -489,14 +510,19 @@ Verified checks observed in the repository and reports:
 - **Docker Compose & Load Balancer Verification** *(documented in `reports/P10_Docker_CI_CD_Report.md`)*:
   - Docker Compose configuration validated; PostgreSQL, Redis, and all 3 API containers reported healthy.
   - 9 consecutive `GET http://localhost:8000/health` requests rotated cleanly across `API1 → API2 → API3` (3 requests per replica).
-- **Frontend Production Build & Live `POST /predict` Check**:
-  - `npm run build` in `frontend/` succeeded (`vite build`, 2088 modules transformed).
+- **Automated Backend Payment Suite (`pytest -v` in `tests/`)**:
+  - `tests/test_razorpay_payments.py` (4 tests): Verifies `GET /payments/razorpay/config` secret safety, `POST /payments/razorpay/order` idempotency, valid HMAC-SHA256 verification transitioning to `PAID_TEST`, invalid signature rejection (`400` / `FAILED`), and `COD_DEMO` persistence.
+  - `tests/test_youpi_payments.py` (6 tests): Verifies fail-closed YouPI-PG config, mocked gateway session/QR proxy, raw-byte webhook HMAC + replay protection, manual reconciliation, and 3-replica Redis Pub/Sub SSE delivery.
+  - Total: **10 passed** (`pytest -v`).
+- **Frontend Production Build & Live Razorpay / ETA Checks**:
+  - `npm run build` in `frontend/` succeeded (`vite build`, `2100` modules transformed).
+  - Live `GET http://localhost:8000/payments/razorpay/config` confirmed `configured: true`, `mode: "test"`, and `rzp_test_*` key prefix.
+  - Live `POST /payments/razorpay/order`, invalid-signature `POST /payments/razorpay/verify` (`400`), and `POST /orders` (`COD_DEMO`) verified against the running Nginx + `api1`/`api2`/`api3` stack.
   - Live `POST /predict` verified directly against `http://localhost:8000/predict` (`200 OK`, `cache.status: "MISS"`, `storage: "PostgreSQL"`, `kafka.status: "PUBLISHED"`) and via Vite `/api/predict` proxy (`200 OK`, `cache.status: "HIT"`).
 
 ### Known Limitations
-- The `tests/` directory is currently empty; `test_circuit_breaker.py` and `test_consumer_retry.py` live at the repository root, so CI runs `pytest -v` only after tests are placed in `tests/`.
 - Live Redis outage/recovery and live Kafka failure-path integration tests have not been executed.
-- The frontend food ordering catalog, cart, checkout, and tracking steps are client-side academic demo UI (`localStorage`), with no real payment or merchant backend.
+- All online payments operate in **Razorpay Test Mode** (`PAID_TEST`) or **Demo COD** (`COD_DEMO`) for academic evaluation; no real-money transactions are processed, and Test Mode UPI QR scanning is disabled in favor of VPA Collect (`success@razorpay` / `failure@razorpay`), Cards, Net Banking, Wallets, and Pay Later.
 - `docker-compose.yml` runs a single PostgreSQL container and does not deploy a frontend container or remote production server.
 
 ---
@@ -516,8 +542,10 @@ Mini-Uber-ETA/
 │   └── raw/
 │       ├── test.parquet
 │       └── train.parquet
+├── docs/
+│   └── YOUPI_PG_INTEGRATION.md         # Optional YouPI-PG setup & license/compliance notes
 ├── frontend/                           # React 18 + Vite Zomato-inspired UI
-│   ├── public/
+│   ├── public/                         # Includes zomato-logo.png & favicon.svg
 │   ├── src/
 │   │   ├── components/
 │   │   ├── context/
@@ -531,6 +559,7 @@ Mini-Uber-ETA/
 │   ├── index.html
 │   ├── package.json
 │   ├── tailwind.config.js
+│   ├── vercel.json
 │   └── vite.config.js
 ├── models/                             # Holds gitignored eta_model.joblib
 ├── nginx/
@@ -544,19 +573,25 @@ Mini-Uber-ETA/
 ├── src/
 │   ├── api/
 │   │   ├── graphql_schema.py           # Strawberry GraphQL schema
-│   │   └── main.py                     # FastAPI REST + GraphQL + ML inference app
+│   │   └── main.py                     # FastAPI REST + GraphQL + ML inference + payments
 │   ├── kafka/
 │   │   └── consumer.py                 # Retry + manual commit Kafka consumer
 │   ├── messaging/
 │   │   └── kafka_producer.py           # Redpanda/Kafka event producer
 │   ├── models/
-│   │   ├── db_models.py                # SQLAlchemy ETAPrediction model
+│   │   ├── db_models.py                # SQLAlchemy ETAPrediction & CustomerOrder models
 │   │   └── train.py                    # Model training & evaluation pipeline
+│   ├── payments/
+│   │   └── youpi_service.py            # Optional fail-closed YouPI-PG client (disabled by default)
 │   ├── pipeline/
 │   │   └── etl.py                      # Heterogeneous data ingestion & feature ETL
 │   ├── resilience/
 │   │   └── circuit_breaker.py          # Thread-safe CircuitBreaker implementation
 │   └── database.py                     # PostgreSQL SQLAlchemy engine & session setup
+├── tests/
+│   ├── conftest.py                     # Ensures repo root is on sys.path for pytest
+│   ├── test_razorpay_payments.py       # Razorpay Test Mode & Demo COD tests
+│   └── test_youpi_payments.py          # Fail-closed YouPI-PG tests
 ├── .dockerignore
 ├── .env.example
 ├── .gitignore
@@ -565,7 +600,8 @@ Mini-Uber-ETA/
 ├── README.md
 ├── requirements.txt
 ├── test_circuit_breaker.py
-└── test_consumer_retry.py
+├── test_consumer_retry.py
+└── vercel.json
 ```
 
 ---

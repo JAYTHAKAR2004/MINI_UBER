@@ -17,6 +17,18 @@ import VegBadge from '../components/VegBadge';
 import DeliveryTrackingMap from '../components/maps/DeliveryTrackingMap';
 
 function formatPaymentBadge(order) {
+  if (order.paymentStatus === 'RECONCILED') {
+    return {
+      label: `UPI Payment Reconciled (UTR: ${order.utr || 'Verified'})`,
+      className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    };
+  }
+  if (order.paymentStatus === 'PENDING_VERIFICATION' || order.paymentStatus === 'UTR_SUBMITTED') {
+    return {
+      label: `Pending Bank Verification (UTR: ${order.utr || 'Submitted'})`,
+      className: 'bg-amber-50 text-amber-800 border-amber-200',
+    };
+  }
   if (order.paymentStatus === 'PAID_TEST') {
     return {
       label: `Razorpay Test Verified (${order.razorpayPaymentId || 'Test'})`,
@@ -66,6 +78,9 @@ export default function OrderConfirmationPage() {
   }
 
   const paymentBadge = formatPaymentBadge(order);
+  const isPendingVerification =
+    order.paymentStatus === 'PENDING_VERIFICATION' ||
+    order.paymentStatus === 'UTR_SUBMITTED';
   const etaLow = Math.max(
     5,
     Math.round(order.etaMinutes - FINAL_TEST_METRICS.mae)
@@ -75,16 +90,38 @@ export default function OrderConfirmationPage() {
   return (
     <div className="mx-auto max-w-5xl px-4 py-10 sm:px-6 lg:px-8">
       {/* Confirmation Card */}
-      <div className="rounded-3xl border border-emerald-200 bg-white p-6 shadow-card sm:p-8">
+      <div
+        className={`rounded-3xl border bg-white p-6 shadow-card sm:p-8 ${
+          isPendingVerification ? 'border-amber-200' : 'border-emerald-200'
+        }`}
+      >
         <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
           <div className="flex items-center gap-4">
-            <span className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600">
-              <CheckCircle2 className="h-8 w-8" />
+            <span
+              className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl ${
+                isPendingVerification
+                  ? 'bg-amber-50 text-amber-600'
+                  : 'bg-emerald-50 text-emerald-600'
+              }`}
+            >
+              {isPendingVerification ? (
+                <Clock className="h-8 w-8" />
+              ) : (
+                <CheckCircle2 className="h-8 w-8" />
+              )}
             </span>
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-700">
-                  Order Confirmed
+                <span
+                  className={`rounded-full px-2.5 py-0.5 text-xs font-bold ${
+                    isPendingVerification
+                      ? 'bg-amber-50 text-amber-800'
+                      : 'bg-emerald-50 text-emerald-700'
+                  }`}
+                >
+                  {isPendingVerification
+                    ? 'Awaiting Bank Verification'
+                    : 'Order Confirmed'}
                 </span>
                 <span
                   className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${paymentBadge.className}`}
@@ -94,14 +131,16 @@ export default function OrderConfirmationPage() {
                 </span>
               </div>
               <h1 className="mt-1.5 font-display text-2xl font-extrabold text-brand-black sm:text-3xl">
-                Thank you, {order.customerName || 'Customer'}!
+                {isPendingVerification
+                  ? `Order Placed, ${order.customerName || 'Customer'} (Verification Pending)`
+                  : `Thank you, ${order.customerName || 'Customer'}!`}
               </h1>
               <p className="mt-0.5 text-xs text-neutral-500">
                 Order ID{' '}
                 <strong className="font-mono text-brand-black">
                   {order.id}
                 </strong>{' '}
-                · Confirmed {formatTimestamp(order.createdAt)}
+                · {isPendingVerification ? 'Placed' : 'Confirmed'} {formatTimestamp(order.createdAt)}
               </p>
             </div>
           </div>
@@ -225,8 +264,60 @@ export default function OrderConfirmationPage() {
             </ul>
 
             <div className="mt-3 flex justify-between border-t border-neutral-200 pt-3 text-sm font-extrabold text-brand-black">
-              <span>Total Paid</span>
+              <span>
+                {order.paymentStatus === 'PAID_TEST'
+                  ? 'Total Paid (Test Mode)'
+                  : order.paymentStatus === 'COD_DEMO'
+                  ? 'Total Payable (COD)'
+                  : 'Total Paid'}
+              </span>
               <span className="tabular-nums">{formatPrice(order.total)}</span>
+            </div>
+
+            <div className="mt-4 rounded-xl bg-surface-soft p-3.5 text-xs">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-500">
+                Payment Details
+              </p>
+              <dl className="mt-2 space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-neutral-500">Method</dt>
+                  <dd className="font-semibold text-brand-black">
+                    {order.paymentMethod === 'cod'
+                      ? 'Cash on Delivery (Demo)'
+                      : order.paymentMethod === 'card'
+                      ? 'Credit / Debit Card (Razorpay)'
+                      : order.paymentMethod === 'netbanking'
+                      ? 'Net Banking (Razorpay)'
+                      : order.paymentMethod === 'wallet'
+                      ? 'Wallets (Razorpay)'
+                      : order.paymentMethod === 'razorpay_upi'
+                      ? 'UPI ID / Collect (Razorpay)'
+                      : order.paymentMethod === 'razorpay'
+                      ? 'Razorpay Online'
+                      : order.paymentMethod}
+                    {(order.paymentMode === 'razorpay_test' || order.paymentStatus === 'PAID_TEST') &&
+                      ' · Test Mode'}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <dt className="text-neutral-500">Status</dt>
+                  <dd className="font-mono font-semibold text-brand-black">
+                    {order.paymentStatus}
+                  </dd>
+                </div>
+                {order.razorpayOrderId && (
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-neutral-500">Razorpay Order ID</dt>
+                    <dd className="font-mono text-neutral-700">{order.razorpayOrderId}</dd>
+                  </div>
+                )}
+                {order.razorpayPaymentId && (
+                  <div className="flex items-center justify-between gap-2">
+                    <dt className="text-neutral-500">Razorpay Payment ID</dt>
+                    <dd className="font-mono text-neutral-700">{order.razorpayPaymentId}</dd>
+                  </div>
+                )}
+              </dl>
             </div>
           </div>
         </div>

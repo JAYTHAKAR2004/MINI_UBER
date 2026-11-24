@@ -40,6 +40,17 @@ class CustomerOrder(Base):
     order_status = Column(String(64), nullable=False, default="Order placed")
     razorpay_order_id = Column(String(128), unique=True, index=True, nullable=True)
     razorpay_payment_id = Column(String(128), nullable=True)
+
+    # YouPI-PG Self-Hosted UPI Payment Gateway Integration
+    youpi_session_id = Column(String(128), unique=True, index=True, nullable=True)
+    youpi_payment_id = Column(String(128), index=True, nullable=True)
+    youpi_checkout_url = Column(String(500), nullable=True)
+    utr = Column(String(64), index=True, nullable=True)
+    webhook_event_id = Column(String(128), unique=True, index=True, nullable=True)
+    settlement_state = Column(String(40), nullable=True)
+    reconciled_by = Column(String(128), nullable=True)
+    payment_confirmed_at = Column(DateTime(timezone=True), nullable=True)
+
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),

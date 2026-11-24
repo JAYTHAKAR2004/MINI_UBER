@@ -24,12 +24,14 @@ import { useOrders } from '../context/OrderContext';
 import { useToast } from '../context/ToastContext';
 import { predictETA } from '../services/etaService';
 import {
+  buildRazorpayCheckoutOptions,
   createRazorpayOrder,
   fetchRazorpayConfig,
   loadRazorpayScript,
   persistBackendOrder,
   verifyRazorpayPayment,
 } from '../services/paymentService';
+import UpiPaymentModal from '../components/UpiPaymentModal';
 import {
   areCoordinatesValid,
   calculateHaversineKm,
@@ -46,11 +48,13 @@ const INSTRUCTION_CHIPS = [
 ];
 
 const PAYMENT_OPTIONS = [
-  { id: 'upi', label: 'UPI (GPay / PhonePe)', online: true },
-  { id: 'card', label: 'Credit / Debit Card', online: true },
-  { id: 'netbanking', label: 'Net Banking', online: true },
-  { id: 'wallet', label: 'Wallets', online: true },
+  { id: 'razorpay', label: 'Razorpay Online (Card, Netbanking, Wallet, UPI ID)', online: true },
+  { id: 'card', label: 'Credit / Debit Card (Razorpay)', online: true },
+  { id: 'netbanking', label: 'Net Banking (Razorpay)', online: true },
+  { id: 'wallet', label: 'Wallets (Razorpay)', online: true },
+  { id: 'razorpay_upi', label: 'UPI ID / VPA (Razorpay Test Mode)', online: true },
   { id: 'cod', label: 'Cash on Delivery (Demo)', online: false },
+  { id: 'youpi_upi', label: 'YouPI-PG Self-Hosted UPI (Disabled)', isYoupi: true, online: false, disabled: true },
 ];
 
 export default function CheckoutPage() {
@@ -95,7 +99,8 @@ export default function CheckoutPage() {
   const [customerPhone, setCustomerPhone] = useState(user?.phone || '');
   const [selectedChips, setSelectedChips] = useState(['Contactless delivery']);
   const [customInstruction, setCustomInstruction] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState('upi');
+  const [paymentMethod, setPaymentMethod] = useState('razorpay');
+  const [testUpiVpa, setTestUpiVpa] = useState('success@razorpay');
   const [formErrors, setFormErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
 
@@ -104,10 +109,25 @@ export default function CheckoutPage() {
   const [etaError, setEtaError] = useState(null);
   const [liveEtaResult, setLiveEtaResult] = useState(null);
 
-  // Razorpay config state
+  // YouPI-PG (disabled) & Razorpay config state
+  const [youpiStatus] = useState({
+    loading: false,
+    available: false,
+    configured: false,
+    sessionConfigured: false,
+    webhookConfigured: false,
+    method: 'MANUAL_UPI',
+    notice: 'YouPI-PG gateway is disabled.',
+  });
+  const [upiModalOpen, setUpiModalOpen] = useState(false);
+  const [youpiSessionData, setYoupiSessionData] = useState(null);
+  const pendingUpiOrderRef = useRef(null);
+
   const [razorpayStatus, setRazorpayStatus] = useState({
     loading: true,
     configured: false,
+    mode: 'test',
+    isTestMode: false,
     reason: '',
   });
   const [paymentError, setPaymentError] = useState(null);
@@ -123,6 +143,7 @@ export default function CheckoutPage() {
           loading: false,
           configured: cfg.configured,
           mode: cfg.mode,
+          isTestMode: cfg.isTestMode,
           reason: cfg.reason,
         });
       }
@@ -298,6 +319,10 @@ export default function CheckoutPage() {
     paymentMode,
     razorpayOrderId = null,
     razorpayPaymentId = null,
+    utr = null,
+    youpiPaymentId = null,
+    stageIndex = 1,
+    orderStatus = 'Restaurant confirmed',
     etaResult,
   }) => {
     const formattedAddress = [
@@ -348,21 +373,28 @@ export default function CheckoutPage() {
       paymentMode,
       razorpayOrderId,
       razorpayPaymentId,
+      utr,
+      youpiPaymentId,
       idempotencyKey: idempotencyKeyRef.current,
       distanceKm: computedDistance,
       etaMinutes,
       etaSource: etaResult ? 'live-ml' : 'restaurant-estimate',
       predictionTelemetry: etaResult || null,
       predictionTimestamp: etaResult ? new Date().toISOString() : null,
-      stageIndex: 1,
-      orderStatus: 'Restaurant confirmed',
+      stageIndex,
+      orderStatus,
     });
 
     clearCart();
+    const isPendingVerification = paymentStatus === 'PENDING_VERIFICATION';
     showToast({
-      title: `Order ${order.id} confirmed!`,
-      description: `${order.restaurant.name} · ETA ${order.etaMinutes} min`,
-      type: 'success',
+      title: isPendingVerification
+        ? `Order ${order.id} placed — pending verification`
+        : `Order ${order.id} confirmed!`,
+      description: isPendingVerification
+        ? `UTR ${utr || 'submitted'} awaits bank reconciliation`
+        : `${order.restaurant.name} · ETA ${order.etaMinutes} min`,
+      type: isPendingVerification ? 'info' : 'success',
     });
     navigate(`/order-confirmation/${order.id}`);
   };
@@ -377,8 +409,6 @@ export default function CheckoutPage() {
     const etaResult = liveEtaResult || (await refreshLiveEta());
     const orderCode = `MU-${Math.floor(100000 + Math.random() * 900000)}`;
     const selectedMethodObj = PAYMENT_OPTIONS.find((p) => p.id === paymentMethod);
-    const shouldTryRazorpay =
-      selectedMethodObj?.online && razorpayStatus.configured;
 
     const formattedAddress = [
       activeAddress.flat,
@@ -390,12 +420,30 @@ export default function CheckoutPage() {
       .filter(Boolean)
       .join(', ');
 
-    if (shouldTryRazorpay) {
+    // Fail closed if disabled YouPI-PG option is somehow targeted
+    if (selectedMethodObj?.isYoupi || selectedMethodObj?.disabled) {
+      setPaymentError(
+        'YouPI-PG gateway is currently disabled. Please select Razorpay Online or Cash on Delivery (Demo).'
+      );
+      setSubmitting(false);
+      return;
+    }
+
+    if (selectedMethodObj?.online) {
+      if (!razorpayStatus.configured) {
+        setPaymentError(
+          razorpayStatus.reason ||
+            'Razorpay Test Mode is not configured on the backend. Please select Cash on Delivery (Demo).'
+        );
+        setSubmitting(false);
+        return;
+      }
+
       try {
         const scriptLoaded = await loadRazorpayScript();
         if (!scriptLoaded || !window.Razorpay) {
           throw new Error(
-            'Unable to load Razorpay Checkout script. Check your internet connection or use Demo Checkout.'
+            'Unable to load Razorpay Checkout script. Check your internet connection or use Cash on Delivery (Demo).'
           );
         }
 
@@ -413,63 +461,58 @@ export default function CheckoutPage() {
           payment_status: 'PENDING',
         });
 
-        const rzp = new window.Razorpay({
-          key: rzpOrder.key_id,
-          amount: rzpOrder.amount,
-          currency: rzpOrder.currency,
-          name: 'Mini-Uber-ETA (Zomato Demo)',
-          description: `Test Order ${rzpOrder.order_code}`,
-          order_id: rzpOrder.razorpay_order_id,
-          prefill: {
-            name: customerName.trim(),
-            contact: customerPhone.trim(),
-            email: user?.email || 'demo@example.edu',
-          },
-          theme: {
-            color: '#E23744',
-          },
-          modal: {
-            ondismiss: () => {
+        const rzp = new window.Razorpay(
+          buildRazorpayCheckoutOptions({
+            rzpOrder,
+            paymentMethod,
+            customerName,
+            customerPhone,
+            customerEmail: user?.email,
+            testUpiVpa: razorpayStatus.isTestMode ? testUpiVpa : '',
+            onDismiss: () => {
               setSubmitting(false);
               setPaymentError(
-                'Razorpay test payment was cancelled before completion. You can retry payment anytime.'
+                'Razorpay test payment was cancelled before completion. Your order was not marked paid.'
               );
             },
-          },
-          handler: async (response) => {
-            try {
-              const verification = await verifyRazorpayPayment({
-                order_code: rzpOrder.order_code,
-                razorpay_order_id: response.razorpay_order_id,
-                razorpay_payment_id: response.razorpay_payment_id,
-                razorpay_signature: response.razorpay_signature,
-              });
+            onSuccess: async (response) => {
+              try {
+                const verification = await verifyRazorpayPayment({
+                  order_code: rzpOrder.order_code,
+                  razorpay_order_id: response.razorpay_order_id,
+                  razorpay_payment_id: response.razorpay_payment_id,
+                  razorpay_signature: response.razorpay_signature,
+                });
 
-              if (!verification.verified) {
-                throw new Error('Backend Razorpay signature verification failed.');
+                if (!verification?.verified || verification?.payment_status !== 'PAID_TEST') {
+                  throw new Error('Backend Razorpay signature verification failed.');
+                }
+
+                await finalizeOrder({
+                  orderCode: rzpOrder.order_code,
+                  paymentStatus: verification.payment_status,
+                  paymentMode: rzpOrder.mode === 'test' ? 'razorpay_test' : 'razorpay',
+                  razorpayOrderId: response.razorpay_order_id,
+                  razorpayPaymentId: response.razorpay_payment_id,
+                  orderStatus: verification.order_status || 'Restaurant confirmed',
+                  etaResult,
+                });
+              } catch (verifyErr) {
+                idempotencyKeyRef.current = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                setPaymentError(
+                  verifyErr.message || 'Payment verification failed on backend. Order was not marked paid.'
+                );
+                setSubmitting(false);
               }
-
-              await finalizeOrder({
-                orderCode: rzpOrder.order_code,
-                paymentStatus: 'PAID_TEST',
-                paymentMode: 'razorpay_test',
-                razorpayOrderId: response.razorpay_order_id,
-                razorpayPaymentId: response.razorpay_payment_id,
-                etaResult,
-              });
-            } catch (verifyErr) {
-              setPaymentError(
-                verifyErr.message || 'Payment verification failed on backend.'
-              );
-              setSubmitting(false);
-            }
-          },
-        });
+            },
+          })
+        );
 
         rzp.on('payment.failed', (failureResp) => {
+          idempotencyKeyRef.current = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           setPaymentError(
             failureResp?.error?.description ||
-              'Razorpay test transaction failed. Please retry.'
+              'Razorpay test transaction failed. Your order was not marked paid.'
           );
           setSubmitting(false);
         });
@@ -477,6 +520,7 @@ export default function CheckoutPage() {
         rzp.open();
         return;
       } catch (err) {
+        idempotencyKeyRef.current = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         setPaymentError(err.message || 'Unable to start Razorpay test checkout.');
         setSubmitting(false);
         return;
@@ -508,6 +552,40 @@ export default function CheckoutPage() {
     setSubmitting(false);
   };
 
+  const handleUpiPendingVerification = async (eventData) => {
+    setUpiModalOpen(false);
+    const pending = pendingUpiOrderRef.current;
+    if (!pending) return;
+
+    await finalizeOrder({
+      orderCode: pending.orderCode,
+      paymentStatus: 'PENDING_VERIFICATION',
+      paymentMode: 'youpi_manual_upi',
+      utr: eventData?.utr || null,
+      youpiPaymentId: eventData?.payment_id || null,
+      stageIndex: 0,
+      orderStatus: 'Pending Payment Verification',
+      etaResult: pending.etaResult,
+    });
+  };
+
+  const handleUpiReconciled = async (eventData) => {
+    setUpiModalOpen(false);
+    const pending = pendingUpiOrderRef.current;
+    if (!pending) return;
+
+    await finalizeOrder({
+      orderCode: pending.orderCode,
+      paymentStatus: 'RECONCILED',
+      paymentMode: 'youpi_manual_upi',
+      utr: eventData?.utr || null,
+      youpiPaymentId: eventData?.payment_id || null,
+      stageIndex: 1,
+      orderStatus: 'Restaurant confirmed',
+      etaResult: pending.etaResult,
+    });
+  };
+
   const etaVal = liveEtaResult?.predicted_eta_minutes ?? null;
   const arrivalLow =
     etaVal !== null ? Math.max(5, Math.round(etaVal - FINAL_TEST_METRICS.mae)) : null;
@@ -526,8 +604,12 @@ export default function CheckoutPage() {
           </p>
         </div>
         <span className="rounded-full border border-neutral-200 bg-surface-soft px-3.5 py-1.5 text-xs font-semibold text-neutral-600">
-          {razorpayStatus.configured
-            ? 'Razorpay Test Mode Ready'
+          {razorpayStatus.loading
+            ? 'Checking Payment Gateway...'
+            : razorpayStatus.isTestMode
+            ? 'Razorpay Test Mode'
+            : razorpayStatus.configured
+            ? 'Razorpay Configured'
             : 'Academic Demo Checkout'}
         </span>
       </div>
@@ -797,28 +879,50 @@ export default function CheckoutPage() {
                   Payment Method
                 </h2>
               </div>
-              {razorpayStatus.configured ? (
+              {razorpayStatus.loading ? (
+                <span className="rounded-full bg-surface-soft px-2.5 py-0.5 text-[11px] font-bold text-neutral-600">
+                  Checking Gateway...
+                </span>
+              ) : razorpayStatus.isTestMode ? (
                 <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
                   <ShieldCheck className="h-3.5 w-3.5" />
-                  Razorpay Test Mode Active
+                  Razorpay Test Mode
+                </span>
+              ) : razorpayStatus.configured ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-bold text-emerald-700">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  Razorpay Configured
                 </span>
               ) : (
                 <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
-                  Demo Fallback Active
+                  Razorpay Unavailable · Demo COD
                 </span>
               )}
             </div>
 
-            {!razorpayStatus.loading && !razorpayStatus.configured && (
+            {paymentMethod !== 'cod' && !razorpayStatus.loading && razorpayStatus.isTestMode && (
+              <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-emerald-200 bg-emerald-50/70 p-3.5 text-xs text-emerald-950">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                <div>
+                  <p className="font-bold">Razorpay Test Mode Active</p>
+                  <p className="mt-0.5 text-emerald-800">
+                    Test simulated payments via <strong>Card</strong> (Visa/Mastercard/RuPay), <strong>Net Banking</strong>, <strong>Wallets</strong> (MobiKwik, PayZapp, Airtel Money), or <strong>UPI ID / VPA</strong> (<code className="font-mono">success@razorpay</code> / <code className="font-mono">failure@razorpay</code>). Payments are verified via backend HMAC-SHA256 signatures — Test Mode QRs cannot be scanned by live PhonePe/GPay apps.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {paymentMethod !== 'cod' && !razorpayStatus.loading && !razorpayStatus.configured && (
               <div className="mt-3 flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900">
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
                 <div>
                   <p className="font-bold">Razorpay Test Mode Not Configured</p>
                   <p className="mt-0.5">{razorpayStatus.reason}</p>
                   <p className="mt-1 text-[11px] text-amber-800">
-                    To enable real sandbox card/UPI payments, set{' '}
+                    Configure{' '}
                     <code className="font-mono">RAZORPAY_KEY_ID</code> and{' '}
-                    <code className="font-mono">RAZORPAY_KEY_SECRET</code> in your backend <code className="font-mono">.env</code> and rebuild the API containers. Until then, checkout uses an explicitly labelled <strong>Demo Checkout</strong> fallback.
+                    <code className="font-mono">RAZORPAY_KEY_SECRET</code> on the backend, or select{' '}
+                    <strong>Cash on Delivery (Demo)</strong>.
                   </p>
                 </div>
               </div>
@@ -828,23 +932,80 @@ export default function CheckoutPage() {
               {PAYMENT_OPTIONS.map((opt) => (
                 <label
                   key={opt.id}
-                  className={`flex cursor-pointer items-center gap-2.5 rounded-xl border p-3.5 text-xs font-semibold transition-colors ${
-                    paymentMethod === opt.id
-                      ? 'border-brand-primary bg-brand-primarySoft text-brand-black'
-                      : 'border-neutral-200 bg-surface-soft text-neutral-700 hover:bg-surface-muted'
+                  className={`flex items-center justify-between gap-2.5 rounded-xl border p-3.5 text-xs font-semibold transition-colors ${
+                    opt.disabled
+                      ? 'cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400 opacity-60'
+                      : paymentMethod === opt.id
+                      ? 'cursor-pointer border-brand-primary bg-brand-primarySoft text-brand-black'
+                      : 'cursor-pointer border-neutral-200 bg-surface-soft text-neutral-700 hover:bg-surface-muted'
                   }`}
                 >
-                  <input
-                    type="radio"
-                    name="paymentMethod"
-                    checked={paymentMethod === opt.id}
-                    onChange={() => setPaymentMethod(opt.id)}
-                    className="accent-brand-primary"
-                  />
-                  {opt.label}
+                  <span className="flex items-center gap-2.5">
+                    <input
+                      type="radio"
+                      name="paymentMethod"
+                      disabled={Boolean(opt.disabled)}
+                      checked={paymentMethod === opt.id}
+                      onChange={() => {
+                        if (!opt.disabled) {
+                          setPaymentMethod(opt.id);
+                          setPaymentError(null);
+                        }
+                      }}
+                      className="accent-brand-primary"
+                    />
+                    {opt.label}
+                  </span>
+                  {opt.disabled && (
+                    <span className="shrink-0 rounded-full bg-neutral-200 px-2 py-0.5 text-[10px] font-bold text-neutral-600">
+                      Disabled
+                    </span>
+                  )}
                 </label>
               ))}
             </div>
+
+            {paymentMethod === 'razorpay_upi' && razorpayStatus.isTestMode && (
+              <div className="mt-3 rounded-xl border border-neutral-200 bg-surface-soft p-3.5 text-xs">
+                <label className="block font-bold text-brand-black">
+                  Razorpay Test UPI ID (VPA Collect)
+                </label>
+                <p className="mt-0.5 text-[11px] text-neutral-600">
+                  Test Mode UPI uses VPA entry instead of scanning a QR code (real UPI apps reject Test Mode QRs as Invalid QR).
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={testUpiVpa}
+                    onChange={(e) => setTestUpiVpa(e.target.value)}
+                    placeholder="success@razorpay"
+                    className="min-w-[200px] flex-1 rounded-lg border border-neutral-300 bg-white px-3 py-1.5 font-mono text-xs focus:border-brand-primary focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setTestUpiVpa('success@razorpay')}
+                    className={`rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-semibold ${
+                      testUpiVpa === 'success@razorpay'
+                        ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                        : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
+                    }`}
+                  >
+                    success@razorpay
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTestUpiVpa('failure@razorpay')}
+                    className={`rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-semibold ${
+                      testUpiVpa === 'failure@razorpay'
+                        ? 'border-red-300 bg-red-50 text-red-800'
+                        : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
+                    }`}
+                  >
+                    failure@razorpay
+                  </button>
+                </div>
+              </div>
+            )}
 
             {paymentError && (
               <div className="mt-4 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800">
@@ -969,7 +1130,12 @@ export default function CheckoutPage() {
 
             <button
               type="submit"
-              disabled={submitting}
+              disabled={
+                submitting ||
+                (PAYMENT_OPTIONS.find((p) => p.id === paymentMethod)?.online &&
+                  !razorpayStatus.loading &&
+                  !razorpayStatus.configured)
+              }
               className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-brand-primary py-3.5 text-sm font-semibold text-white shadow-soft transition-colors hover:bg-brand-primaryDark disabled:opacity-60"
             >
               {submitting ? (
@@ -980,7 +1146,8 @@ export default function CheckoutPage() {
               ) : PAYMENT_OPTIONS.find((p) => p.id === paymentMethod)?.online &&
                 razorpayStatus.configured ? (
                 <>
-                  Pay {formatPrice(total)} (Razorpay Test Mode)
+                  Pay {formatPrice(total)} ·{' '}
+                  {razorpayStatus.isTestMode ? 'Razorpay Test Mode' : 'Razorpay'}
                   <ArrowRight className="h-4 w-4" />
                 </>
               ) : paymentMethod === 'cod' ? (
@@ -990,7 +1157,7 @@ export default function CheckoutPage() {
                 </>
               ) : (
                 <>
-                  Place Order via Demo Checkout · {formatPrice(total)}
+                  Razorpay Unavailable — Select Demo COD
                   <ArrowRight className="h-4 w-4" />
                 </>
               )}
@@ -998,6 +1165,15 @@ export default function CheckoutPage() {
           </div>
         </div>
       </form>
+
+      {/* YouPI-PG Direct UPI Payment Modal */}
+      <UpiPaymentModal
+        isOpen={upiModalOpen}
+        onClose={() => setUpiModalOpen(false)}
+        sessionData={youpiSessionData}
+        onOrderPendingVerification={handleUpiPendingVerification}
+        onPaymentReconciled={handleUpiReconciled}
+      />
     </div>
   );
 }

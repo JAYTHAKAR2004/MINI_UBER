@@ -1,18 +1,15 @@
 
 
+import asyncio
 import os
-
 import json
-
 import hashlib
-
 import socket
-
-from pathlib import Path
-
 import time
-
-from typing import Optional
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Literal, Optional
 
 import joblib
 
@@ -24,10 +21,12 @@ import redis
 from strawberry.fastapi import GraphQLRouter
 from src.api.graphql_schema import schema
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
+from starlette.responses import StreamingResponse
 
 from pydantic import BaseModel, Field
 
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
 from src.resilience.circuit_breaker import CircuitBreaker
@@ -700,15 +699,35 @@ from src.models.db_models import CustomerOrder
 
 
 def ensure_orders_table():
-    """Safely initialize application tables across multiple API instances."""
+    """Safely initialize and additively migrate application tables across API instances."""
     with engine.begin() as connection:
-        # Serialize database initialization across API instances.
-        connection.exec_driver_sql(
-            "SELECT pg_advisory_xact_lock(7420192601)"
-        )
+        is_postgres = connection.dialect.name == "postgresql"
+        if is_postgres:
+            # Serialize database initialization across API instances.
+            connection.exec_driver_sql(
+                "SELECT pg_advisory_xact_lock(7420192601)"
+            )
 
         # Create missing tables only after acquiring the lock.
         Base.metadata.create_all(bind=connection)
+
+        if is_postgres:
+            additive_statements = [
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS youpi_session_id VARCHAR(128)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS youpi_payment_id VARCHAR(128)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS youpi_checkout_url VARCHAR(500)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS utr VARCHAR(64)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS webhook_event_id VARCHAR(128)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS settlement_state VARCHAR(40)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS reconciled_by VARCHAR(128)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS payment_confirmed_at TIMESTAMPTZ",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_orders_youpi_session_id ON customer_orders (youpi_session_id)",
+                "CREATE INDEX IF NOT EXISTS ix_customer_orders_youpi_payment_id ON customer_orders (youpi_payment_id)",
+                "CREATE INDEX IF NOT EXISTS ix_customer_orders_utr ON customer_orders (utr)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_orders_webhook_event_id ON customer_orders (webhook_event_id)",
+            ]
+            for stmt in additive_statements:
+                connection.exec_driver_sql(stmt)
 
 
 @app.on_event("startup")
@@ -765,6 +784,14 @@ def customer_order_to_dict(record: CustomerOrder) -> dict:
         "order_status": record.order_status,
         "razorpay_order_id": record.razorpay_order_id,
         "razorpay_payment_id": record.razorpay_payment_id,
+        "youpi_session_id": record.youpi_session_id,
+        "youpi_payment_id": record.youpi_payment_id,
+        "youpi_checkout_url": record.youpi_checkout_url,
+        "utr": record.utr,
+        "webhook_event_id": record.webhook_event_id,
+        "settlement_state": record.settlement_state,
+        "reconciled_by": record.reconciled_by,
+        "payment_confirmed_at": record.payment_confirmed_at.isoformat() if record.payment_confirmed_at else None,
         "created_at": record.created_at.isoformat() if record.created_at else None,
     }
 
@@ -954,8 +981,9 @@ def verify_razorpay_payment(payload: RazorpayVerifyRequest):
 
 @app.post("/orders")
 def create_customer_order(payload: CustomerOrderCreateRequest):
-    allowed_statuses = {"DEMO", "COD_DEMO"}
+    allowed_statuses = {"DEMO", "COD_DEMO", "PENDING"}
     status_value = payload.payment_status if payload.payment_status in allowed_statuses else "DEMO"
+    is_pending = status_value == "PENDING"
 
     try:
         ensure_orders_table()
@@ -988,7 +1016,8 @@ def create_customer_order(payload: CustomerOrderCreateRequest):
             predicted_eta_minutes=payload.predicted_eta_minutes,
             payment_method=payload.payment_method,
             payment_status=status_value,
-            order_status="Restaurant confirmed",
+            order_status="Order placed" if is_pending else "Restaurant confirmed",
+            settlement_state="INITIATED" if is_pending else None,
         )
         db.add(record)
         db.commit()
@@ -1027,3 +1056,598 @@ def list_customer_orders(limit: int = 20):
         raise HTTPException(status_code=503, detail=f"Database read failed: {exc}")
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# YouPI-PG Self-Hosted UPI Payment Gateway Integration Endpoints (MANUAL_UPI)
+# ---------------------------------------------------------------------------
+from src.payments.youpi_service import (
+    YouPIGatewayError,
+    broadcaster,
+    create_youpi_session,
+    fetch_youpi_qr_svg,
+    get_youpi_config,
+    submit_youpi_manual_utr,
+    validate_utr_format,
+    verify_youpi_webhook,
+)
+
+
+class YouPIOrderInitRequest(BaseModel):
+    order_code: str = Field(min_length=3, max_length=64)
+    amount_inr: float = Field(gt=0)
+    idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    customer_name: Optional[str] = "Customer"
+    customer_phone: Optional[str] = ""
+    return_url: Optional[str] = None
+
+
+class YouPIUtrSubmitRequest(BaseModel):
+    order_code: str = Field(min_length=3, max_length=64)
+    utr: str = Field(min_length=6, max_length=35)
+
+
+class YouPIReconcileRequest(BaseModel):
+    order_code: str = Field(min_length=3, max_length=64)
+    decision: Literal["RECONCILED", "FAILED"]
+    verified_utr: str = Field(min_length=6, max_length=35)
+    reviewer: str = Field(min_length=2, max_length=120)
+    note: Optional[str] = Field(default=None, max_length=300)
+
+
+def _derive_youpi_ui_state(record: CustomerOrder) -> str:
+    if record.payment_status == "RECONCILED" or record.settlement_state == "RECONCILED":
+        return "RECONCILED"
+    if record.payment_status in ("FAILED", "EXPIRED", "CANCELLED"):
+        return record.payment_status
+    if record.settlement_state == "UTR_SUBMITTED":
+        return "UTR_SUBMITTED"
+    if record.payment_status == "PENDING_VERIFICATION" and (
+        record.settlement_state == "OBSERVED_UNRECONCILED" or bool(record.utr)
+    ):
+        return "PENDING_VERIFICATION"
+    if record.settlement_state == "QR_READY" or record.youpi_payment_id:
+        return "QR_READY"
+    return "INITIATED"
+
+
+def _order_status_snapshot(record: CustomerOrder) -> dict:
+    return {
+        "order_code": record.order_code,
+        "ui_state": _derive_youpi_ui_state(record),
+        "payment_status": record.payment_status,
+        "settlement_state": record.settlement_state or "INITIATED",
+        "order_status": record.order_status,
+        "utr": record.utr,
+        "payment_id": record.youpi_payment_id,
+        "checkout_url": record.youpi_checkout_url,
+        "reconciled_by": record.reconciled_by,
+        "payment_confirmed_at": (
+            record.payment_confirmed_at.isoformat() if record.payment_confirmed_at else None
+        ),
+    }
+
+
+def _load_order_snapshot_sync(order_code: str) -> Optional[dict]:
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(CustomerOrder)
+            .filter(CustomerOrder.order_code == order_code)
+            .first()
+        )
+        return _order_status_snapshot(record) if record else None
+    finally:
+        db.close()
+
+
+@app.get("/payments/youpi/config")
+def youpi_config():
+    """Public configuration status for YouPI-PG MANUAL_UPI checkout (no secrets exposed)."""
+    cfg = get_youpi_config()
+    method = cfg["upi_method"]
+    if not cfg["session_configured"]:
+        notice = (
+            "YouPI-PG merchant credentials (YOUPI_MERCHANT_ID and YOUPI_MERCHANT_API_KEY) "
+            "are not configured on the backend."
+        )
+    elif not cfg["webhook_configured"]:
+        notice = (
+            "YouPI-PG session credentials are set, but YOUPI_WEBHOOK_SECRET is missing. "
+            "Signed webhook verification fails closed until configured."
+        )
+    else:
+        notice = (
+            "YouPI-PG MANUAL_UPI configured. Orders remain PENDING_VERIFICATION after "
+            "UTR submission or observer alerts until independently reconciled against bank records."
+        )
+
+    return {
+        "configured": cfg["configured"],
+        "session_configured": cfg["session_configured"],
+        "webhook_configured": cfg["webhook_configured"],
+        "method": method,
+        "checkout_portal_configured": bool(cfg["checkout_url"]),
+        "requires_manual_reconciliation": method == "MANUAL_UPI",
+        "notice": notice,
+    }
+
+
+@app.post("/payments/youpi/order")
+async def create_youpi_payment(payload: YouPIOrderInitRequest):
+    """Create a real YouPI-PG session for an existing order (fail-closed if unavailable)."""
+    try:
+        ensure_orders_table()
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(CustomerOrder)
+            .filter(CustomerOrder.order_code == payload.order_code)
+            .with_for_update()
+            .first()
+        )
+        if not record:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Order {payload.order_code} not found. Place order before initiating UPI payment.",
+            )
+
+        if record.payment_status in ("RECONCILED", "PAID_TEST"):
+            raise HTTPException(
+                status_code=409,
+                detail="This order has already been reconciled/paid.",
+            )
+
+        if abs(record.amount_inr - payload.amount_inr) > 0.01:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Payment amount mismatch: order total is ₹{record.amount_inr:.2f}, "
+                    f"requested ₹{payload.amount_inr:.2f}."
+                ),
+            )
+
+        session = await create_youpi_session(
+            order_code=record.order_code,
+            amount_inr=record.amount_inr,
+            customer_name=payload.customer_name or record.customer_name,
+            customer_phone=payload.customer_phone or record.customer_phone,
+            idempotency_key=payload.idempotency_key or record.idempotency_key,
+            return_url=payload.return_url,
+        )
+
+        record.youpi_session_id = session["session_id"]
+        record.youpi_payment_id = session["payment_id"]
+        record.youpi_checkout_url = session["checkout_url"]
+        record.payment_method = f"YouPI-PG ({session['method']})"
+        record.payment_status = "PENDING_VERIFICATION"
+        record.settlement_state = "QR_READY"
+        record.order_status = "Awaiting UPI Payment"
+        db.commit()
+        db.refresh(record)
+
+        snapshot = _order_status_snapshot(record)
+        await broadcaster.broadcast(record.order_code, snapshot)
+
+        return {
+            **session,
+            "ui_state": snapshot["ui_state"],
+            "payment_status": record.payment_status,
+            "settlement_state": record.settlement_state,
+            "order_status": record.order_status,
+        }
+    except YouPIGatewayError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=f"Database error: {exc}")
+    finally:
+        db.close()
+
+
+@app.get("/payments/youpi/qr/{order_code}.svg")
+async def get_youpi_qr_svg(order_code: str):
+    """Proxy the real dynamic SVG QR generated by YouPI-PG Checkout Portal (`:7000`)."""
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(CustomerOrder)
+            .filter(CustomerOrder.order_code == order_code)
+            .first()
+        )
+        if not record or not record.youpi_payment_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No active YouPI-PG payment session found for order {order_code}.",
+            )
+        payment_id = record.youpi_payment_id
+    finally:
+        db.close()
+
+    try:
+        svg_bytes = await fetch_youpi_qr_svg(payment_id)
+    except YouPIGatewayError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    return Response(
+        content=svg_bytes,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+@app.post("/payments/youpi/utr")
+async def submit_youpi_utr(payload: YouPIUtrSubmitRequest):
+    """Record a customer-submitted UTR and forward it to YouPI-PG `manual-utr`.
+
+    IMPORTANT: Submitting a UTR never marks an order paid or confirmed. Status remains
+    `PENDING_VERIFICATION` until an authorized reviewer independently reconciles it.
+    """
+    try:
+        clean_utr = validate_utr_format(payload.utr)
+    except YouPIGatewayError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(CustomerOrder)
+            .filter(CustomerOrder.order_code == payload.order_code)
+            .with_for_update()
+            .first()
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Order {payload.order_code} not found.")
+        if not record.youpi_payment_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No YouPI-PG payment session exists for this order.",
+            )
+        if record.payment_status in ("RECONCILED", "PAID_TEST"):
+            raise HTTPException(status_code=409, detail="Order is already reconciled/paid.")
+        if record.payment_status in ("EXPIRED", "CANCELLED", "FAILED"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot submit UTR while order payment is {record.payment_status}.",
+            )
+
+        duplicate_utr = (
+            db.query(CustomerOrder)
+            .filter(
+                func.upper(CustomerOrder.utr) == clean_utr.upper(),
+                CustomerOrder.order_code != payload.order_code,
+            )
+            .first()
+        )
+        if duplicate_utr:
+            raise HTTPException(
+                status_code=409,
+                detail="This UPI transaction reference (UTR) has already been submitted for another order.",
+            )
+
+        gateway_resp = await submit_youpi_manual_utr(record.youpi_payment_id, clean_utr)
+
+        record.utr = clean_utr
+        record.payment_status = "PENDING_VERIFICATION"
+        record.settlement_state = "UTR_SUBMITTED"
+        record.order_status = "Pending Payment Verification"
+        db.commit()
+        db.refresh(record)
+
+        snapshot = _order_status_snapshot(record)
+        await broadcaster.broadcast(record.order_code, snapshot)
+
+        return {
+            **snapshot,
+            "gateway_response": {
+                "status": gateway_resp.get("status"),
+                "settlementState": gateway_resp.get("settlementState"),
+                "message": gateway_resp.get("message"),
+            },
+            "message": (
+                "UTR submitted for independent bank verification. "
+                "Payment stays PENDING_VERIFICATION until reconciled."
+            ),
+        }
+    except YouPIGatewayError as exc:
+        db.rollback()
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=f"Database error saving UTR: {exc}")
+    finally:
+        db.close()
+
+
+@app.post("/payments/youpi/webhook")
+async def youpi_webhook(request: Request):
+    """Receive, cryptographically verify, and idempotently process YouPI-PG webhooks."""
+    cfg = get_youpi_config()
+    if not cfg["webhook_configured"]:
+        raise HTTPException(
+            status_code=503,
+            detail="YOUPI_WEBHOOK_SECRET is not configured on the backend; failing closed.",
+        )
+
+    raw_body = await request.body()
+    sig_v1 = request.headers.get("X-Gateway-Signature")
+    sig_v2 = request.headers.get("X-Gateway-Signature-V2")
+    ts_header = request.headers.get("X-Gateway-Timestamp")
+
+    verified, verify_reason = verify_youpi_webhook(
+        raw_body=raw_body,
+        signature_v1=sig_v1,
+        signature_v2=sig_v2,
+        timestamp_header=ts_header,
+        secret=cfg["webhook_secret"],
+        tolerance_seconds=cfg["webhook_tolerance_seconds"],
+    )
+    if not verified:
+        raise HTTPException(status_code=401, detail=verify_reason)
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON webhook body.")
+
+    event = str(payload.get("event") or request.headers.get("X-Gateway-Event") or "").strip().upper()
+    order_code = (payload.get("orderId") or payload.get("order_code") or "").strip()
+    currency = str(payload.get("currency") or "INR").strip().upper()
+    settlement_state_in = str(payload.get("settlementState") or "").strip().upper()
+    utr = (payload.get("utr") or "").strip() or None
+    payment_id = (payload.get("paymentId") or "").strip() or None
+    delivery_id = (
+        (request.headers.get("X-Gateway-Delivery-Id") or payload.get("deliveryId") or "").strip()
+    )
+
+    if not event or not order_code:
+        raise HTTPException(status_code=422, detail="Webhook requires both event and orderId.")
+    if currency != "INR":
+        raise HTTPException(status_code=422, detail=f"Unsupported currency '{currency}'; expected INR.")
+
+    try:
+        webhook_amount = float(payload.get("amount"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Webhook payload missing numeric amount.")
+
+    db = SessionLocal()
+    try:
+        if delivery_id:
+            duplicate_delivery = (
+                db.query(CustomerOrder)
+                .filter(CustomerOrder.webhook_event_id == delivery_id)
+                .first()
+            )
+            if duplicate_delivery:
+                return {
+                    "received": True,
+                    "status": "duplicate_ignored",
+                    "order_code": duplicate_delivery.order_code,
+                    "delivery_id": delivery_id,
+                }
+
+        record = (
+            db.query(CustomerOrder)
+            .filter(CustomerOrder.order_code == order_code)
+            .with_for_update()
+            .first()
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Order {order_code} not found.")
+
+        if abs(record.amount_inr - webhook_amount) > 0.01:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Amount mismatch in webhook: expected ₹{record.amount_inr:.2f}, "
+                    f"received ₹{webhook_amount:.2f}."
+                ),
+            )
+
+        if record.payment_status in ("RECONCILED", "PAID_TEST"):
+            return {
+                "received": True,
+                "status": "already_reconciled",
+                "order_code": order_code,
+            }
+
+        if utr:
+            try:
+                utr = validate_utr_format(utr)
+            except YouPIGatewayError as exc:
+                raise HTTPException(status_code=422, detail=exc.detail)
+            reused = (
+                db.query(CustomerOrder)
+                .filter(
+                    func.upper(CustomerOrder.utr) == utr.upper(),
+                    CustomerOrder.order_code != order_code,
+                )
+                .first()
+            )
+            if reused:
+                raise HTTPException(status_code=409, detail="UTR already bound to another order.")
+
+        if delivery_id:
+            record.webhook_event_id = delivery_id
+        if payment_id and not record.youpi_payment_id:
+            record.youpi_payment_id = payment_id
+        if utr:
+            record.utr = utr
+
+        if event == "MANUAL_REVIEW":
+            record.payment_status = "PENDING_VERIFICATION"
+            record.settlement_state = "UTR_SUBMITTED"
+            record.order_status = "Pending Payment Verification"
+        elif event in ("OBSERVED_SUCCESS", "SUCCESS"):
+            # Observer SMS/Gmail alerts are NEVER proof of bank settlement.
+            record.payment_status = "PENDING_VERIFICATION"
+            record.settlement_state = "OBSERVED_UNRECONCILED"
+            record.order_status = "Pending Payment Verification"
+        elif event == "RECONCILED":
+            if settlement_state_in != "RECONCILED" or not (record.utr or utr):
+                raise HTTPException(
+                    status_code=422,
+                    detail="RECONCILED webhook requires settlementState='RECONCILED' and a valid UTR.",
+                )
+            record.payment_status = "RECONCILED"
+            record.settlement_state = "RECONCILED"
+            record.order_status = "Restaurant confirmed"
+            record.reconciled_by = "youpi_bank_reconciliation"
+            record.payment_confirmed_at = datetime.now(timezone.utc)
+        elif event in ("FAILED", "EXPIRED", "CANCELLED"):
+            record.payment_status = event
+            record.settlement_state = event
+            record.order_status = f"Payment {event.title()}"
+        else:
+            raise HTTPException(status_code=422, detail=f"Unsupported webhook event '{event}'.")
+
+        db.commit()
+        db.refresh(record)
+
+        snapshot = _order_status_snapshot(record)
+        await broadcaster.broadcast(record.order_code, snapshot)
+
+        return {
+            "received": True,
+            "status": snapshot["ui_state"],
+            "order_code": record.order_code,
+            "payment_status": record.payment_status,
+            "settlement_state": record.settlement_state,
+            "utr": record.utr,
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=f"Database error processing webhook: {exc}")
+    finally:
+        db.close()
+
+
+@app.post("/payments/youpi/reconcile")
+async def reconcile_youpi_payment(payload: YouPIReconcileRequest, request: Request):
+    """Independent merchant/admin bank reconciliation endpoint.
+
+    Only an authenticated admin holding `YOUPI_RECONCILE_ADMIN_TOKEN` may transition an
+    order from `PENDING_VERIFICATION` to `RECONCILED` (or `FAILED`) after checking bank statements.
+    """
+    cfg = get_youpi_config()
+    admin_token = cfg["reconcile_admin_token"]
+    if not admin_token:
+        raise HTTPException(
+            status_code=503,
+            detail="YOUPI_RECONCILE_ADMIN_TOKEN is not configured on the backend.",
+        )
+
+    auth_header = request.headers.get("Authorization") or ""
+    presented = auth_header[7:].strip() if auth_header.lower().startswith("bearer ") else ""
+    if not presented or not hmac.compare_digest(presented, admin_token):
+        raise HTTPException(status_code=401, detail="Invalid or missing reconciliation bearer token.")
+
+    try:
+        clean_utr = validate_utr_format(payload.verified_utr)
+    except YouPIGatewayError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    db = SessionLocal()
+    try:
+        record = (
+            db.query(CustomerOrder)
+            .filter(CustomerOrder.order_code == payload.order_code)
+            .with_for_update()
+            .first()
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail=f"Order {payload.order_code} not found.")
+
+        if record.payment_status == "RECONCILED":
+            raise HTTPException(status_code=409, detail="Order is already RECONCILED.")
+
+        if payload.decision == "RECONCILED":
+            if record.utr and record.utr.upper() != clean_utr.upper():
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"UTR mismatch: customer submitted '{record.utr}', reconciliation received '{clean_utr}'.",
+                )
+            utr_owner = (
+                db.query(CustomerOrder)
+                .filter(
+                    func.upper(CustomerOrder.utr) == clean_utr.upper(),
+                    CustomerOrder.order_code != payload.order_code,
+                    CustomerOrder.payment_status == "RECONCILED",
+                )
+                .first()
+            )
+            if utr_owner:
+                raise HTTPException(
+                    status_code=409,
+                    detail="This UTR has already been reconciled against another order.",
+                )
+
+            record.utr = clean_utr
+            record.payment_status = "RECONCILED"
+            record.settlement_state = "RECONCILED"
+            record.order_status = "Restaurant confirmed"
+            record.reconciled_by = payload.reviewer.strip()
+            record.payment_confirmed_at = datetime.now(timezone.utc)
+        else:
+            record.payment_status = "FAILED"
+            record.settlement_state = "FAILED"
+            record.order_status = "Payment Failed"
+            record.reconciled_by = payload.reviewer.strip()
+
+        db.commit()
+        db.refresh(record)
+
+        snapshot = _order_status_snapshot(record)
+        await broadcaster.broadcast(record.order_code, snapshot)
+        return snapshot
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(status_code=503, detail=f"Database error during reconciliation: {exc}")
+    finally:
+        db.close()
+
+
+@app.get("/payments/youpi/status/{order_code}")
+def get_youpi_status(order_code: str):
+    """Fetch current server-side payment status snapshot for polling/SSE reconnect."""
+    snapshot = _load_order_snapshot_sync(order_code)
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail=f"Order {order_code} not found.")
+    return snapshot
+
+
+@app.get("/payments/youpi/status/{order_code}/stream")
+async def stream_youpi_status(order_code: str):
+    """Multi-replica SSE stream backed by Redis Pub/Sub and PostgreSQL snapshot polling."""
+    if _load_order_snapshot_sync(order_code) is None:
+        raise HTTPException(status_code=404, detail=f"Order {order_code} not found.")
+
+    return StreamingResponse(
+        broadcaster.stream_events(
+            order_code=order_code,
+            snapshot_fn=lambda: _load_order_snapshot_sync(order_code),
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
