@@ -15,16 +15,13 @@ import {
 } from 'lucide-react';
 import FoodImage from '../components/FoodImage';
 import RestaurantCard from '../components/RestaurantCard';
+import { RestaurantSkeletonCard } from '../components/SkeletonCard';
 import VegBadge from '../components/VegBadge';
-import {
-  CATEGORIES,
-  POPULAR_DISHES,
-  PROMO_BANNERS,
-  RESTAURANTS,
-} from '../data/restaurants';
+import { CATEGORIES, PROMO_BANNERS } from '../data/restaurants';
 import { useLocationContext } from '../context/LocationContext';
 import { useCart } from '../context/CartContext';
 import { useToast } from '../context/ToastContext';
+import { fetchRestaurantsByCity } from '../services/restaurantService';
 import { predictETA } from '../services/etaService';
 import {
   areCoordinatesValid,
@@ -39,6 +36,9 @@ export default function HomePage() {
     useCart();
   const { showToast } = useToast();
 
+  const [cityRestaurants, setCityRestaurants] = useState([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [catalogError, setCatalogError] = useState(null);
   const [selectedCuisine, setSelectedCuisine] = useState('All');
   const [minRating, setMinRating] = useState(0);
   const [fastOnly, setFastOnly] = useState(false);
@@ -48,11 +48,39 @@ export default function HomePage() {
   const [sortBy, setSortBy] = useState('relevance');
   const [liveEtaByRestaurant, setLiveEtaByRestaurant] = useState({});
 
-  // Fetch customer-facing live ML ETA for the featured local kitchen cleanly (fails silently if backend down)
   useEffect(() => {
-    const featured =
-      RESTAURANTS.find((r) => r.city === shortName) || RESTAURANTS[0];
-    if (!featured) return undefined;
+    let active = true;
+    setCatalogLoading(true);
+    setCatalogError(null);
+    setLiveEtaByRestaurant({});
+
+    fetchRestaurantsByCity({ city: shortName, lat, lng })
+      .then((res) => {
+        if (!active) return;
+        setCityRestaurants(res.restaurants || []);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setCityRestaurants([]);
+        setCatalogError(
+          err?.message || `Unable to load restaurants for ${shortName}.`
+        );
+      })
+      .finally(() => {
+        if (active) setCatalogLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [shortName, lat, lng]);
+
+  // Fetch customer-facing live ML ETA for the featured local kitchen cleanly (never across cities)
+  useEffect(() => {
+    const featured = cityRestaurants[0];
+    if (!featured || !featured.coordinates || !areCoordinatesValid(featured.coordinates.lat, featured.coordinates.lng, lat, lng)) {
+      return undefined;
+    }
 
     let active = true;
     const now = new Date();
@@ -60,17 +88,22 @@ export default function HomePage() {
     const pythonWeekday = jsDay === 0 ? 6 : jsDay - 1;
     const rLat = featured.coordinates.lat;
     const rLon = featured.coordinates.lng;
-    const dLat = lat ?? 12.9855;
-    const dLon = lng ?? 77.6412;
-    const dist = calculateHaversineKm(rLat, rLon, dLat, dLon) ?? 4.8;
+    const dist = calculateHaversineKm(rLat, rLon, lat, lng);
+    if (dist === null || dist > 50) return undefined;
 
     predictETA({
+      restaurant_id: featured.id,
+      selected_city: shortName,
+      restaurant_lat: rLat,
+      restaurant_lon: rLon,
+      delivery_lat: lat,
+      delivery_lon: lng,
       Delivery_person_Age: 28,
       Delivery_person_Ratings: 4.7,
       Vehicle_condition: 2,
       multiple_deliveries: 0,
       distance_km: dist,
-      coordinates_valid: areCoordinatesValid(rLat, rLon, dLat, dLon),
+      coordinates_valid: 1,
       order_time_missing: 0,
       order_hour: now.getHours(),
       order_day: now.getDate(),
@@ -92,24 +125,35 @@ export default function HomePage() {
         }
       })
       .catch(() => {
-        // Silent fallback to restaurant baseline ETA on discovery grid
+        // Do not invent an ETA if prediction fails
       });
 
     return () => {
       active = false;
     };
-  }, [shortName, lat, lng, modelCity]);
+  }, [cityRestaurants, shortName, lat, lng, modelCity]);
+
+  const popularDishes = useMemo(() => {
+    return cityRestaurants
+      .flatMap((restaurant) =>
+        (restaurant.menu || [])
+          .filter((item) => item.popular)
+          .map((item) => ({
+            ...item,
+            restaurantId: restaurant.id,
+            restaurantSlug: restaurant.slug,
+            restaurantName: restaurant.name,
+            restaurant,
+          }))
+      )
+      .slice(0, 8);
+  }, [cityRestaurants]);
 
   const filteredRestaurants = useMemo(() => {
-    const cityPrioritized = [
-      ...RESTAURANTS.filter((r) => r.city === shortName),
-      ...RESTAURANTS.filter((r) => r.city !== shortName),
-    ];
-
-    const list = cityPrioritized.filter((r) => {
+    const list = cityRestaurants.filter((r) => {
       if (
         selectedCuisine !== 'All' &&
-        !r.categories.includes(selectedCuisine)
+        !(r.categories || []).includes(selectedCuisine)
       ) {
         return false;
       }
@@ -142,7 +186,7 @@ export default function HomePage() {
     }
     return list;
   }, [
-    shortName,
+    cityRestaurants,
     selectedCuisine,
     minRating,
     fastOnly,
@@ -448,26 +492,43 @@ export default function HomePage() {
             </h2>
           </div>
           <span className="rounded-full bg-surface-soft px-3 py-1 text-[11px] font-medium text-neutral-500">
-            Demo Restaurant Catalog · Live AI ETA on featured route
+            Showing {filteredRestaurants.length} demo kitchens in {shortName}
           </span>
         </div>
 
-        {filteredRestaurants.length === 0 ? (
+        {catalogLoading ? (
+          <div className="mt-6 grid gap-x-5 gap-y-7 sm:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, idx) => (
+              <RestaurantSkeletonCard key={idx} />
+            ))}
+          </div>
+        ) : catalogError ? (
+          <div className="mt-8 rounded-3xl border border-red-200 bg-red-50 px-6 py-10 text-center">
+            <p className="font-display text-lg font-bold text-red-900">
+              Unable to load restaurants for {shortName}
+            </p>
+            <p className="mt-1 text-sm text-red-700">{catalogError}</p>
+          </div>
+        ) : filteredRestaurants.length === 0 ? (
           <div className="mt-8 rounded-3xl border border-dashed border-neutral-300 bg-surface-soft px-6 py-14 text-center">
             <p className="font-display text-lg font-bold text-brand-black">
-              No restaurants match these filters
+              No restaurants found in {shortName} for these filters
             </p>
             <p className="mt-1 text-sm text-neutral-500">
-              Try clearing Pure Veg, price range, or cuisine filters to explore more kitchens.
+              {cityRestaurants.length === 0
+                ? `No partner restaurants are currently available in ${shortName}. Switch cities above to browse supported hubs.`
+                : 'Try clearing Pure Veg, price range, or cuisine filters to explore more local kitchens.'}
             </p>
-            <button
-              type="button"
-              onClick={resetAllFilters}
-              className="mt-5 inline-flex items-center gap-2 rounded-xl bg-brand-primary px-5 py-2.5 text-xs font-bold text-white"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Reset Filters
-            </button>
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={resetAllFilters}
+                className="mt-5 inline-flex items-center gap-2 rounded-xl bg-brand-primary px-5 py-2.5 text-xs font-bold text-white"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset Filters
+              </button>
+            )}
           </div>
         ) : (
           <div className="mt-6 grid gap-x-5 gap-y-7 sm:grid-cols-2 lg:grid-cols-3">
@@ -482,29 +543,30 @@ export default function HomePage() {
         )}
       </section>
 
-      {/* Popular Dishes Strip */}
-      <section className="mt-14 border-t border-neutral-100 bg-surface-soft/70 py-12">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex items-end justify-between gap-4">
-            <div>
-              <h2 className="font-display text-2xl font-semibold text-brand-black">
-                Most ordered dishes right now
-              </h2>
-              <p className="mt-1 text-sm text-neutral-500">
-                Add signature dishes straight into your cart
-              </p>
+      {/* Popular Dishes Strip (Active City Only) */}
+      {popularDishes.length > 0 && (
+        <section className="mt-14 border-t border-neutral-100 bg-surface-soft/70 py-12">
+          <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div className="flex items-end justify-between gap-4">
+              <div>
+                <h2 className="font-display text-2xl font-semibold text-brand-black">
+                  Most ordered in {shortName}
+                </h2>
+                <p className="mt-1 text-sm text-neutral-500">
+                  Add signature dishes from {shortName} kitchens straight into your cart
+                </p>
+              </div>
+              <Link
+                to="/restaurants"
+                className="inline-flex items-center gap-1 text-sm font-semibold text-brand-primary hover:underline"
+              >
+                Explore all
+                <ArrowRight className="h-4 w-4" />
+              </Link>
             </div>
-            <Link
-              to="/restaurants"
-              className="inline-flex items-center gap-1 text-sm font-semibold text-brand-primary hover:underline"
-            >
-              Explore all
-              <ArrowRight className="h-4 w-4" />
-            </Link>
-          </div>
 
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {POPULAR_DISHES.map((dish) => {
+            <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              {popularDishes.map((dish) => {
               const qty = getDishQty(dish.id);
               return (
                 <div
@@ -588,10 +650,11 @@ export default function HomePage() {
                   </div>
                 </div>
               );
-            })}
+              })}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* Subtle AI Delivery Banner */}
       <section className="mx-auto max-w-7xl px-4 pt-10 sm:px-6 lg:px-8">

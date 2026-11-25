@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Briefcase,
   Check,
   Home,
+  Loader2,
   LogOut,
   MapPin,
   Package,
@@ -36,7 +37,13 @@ export default function ProfilePage() {
   const [tab, setTab] = useState('orders');
   const [nameInput, setNameInput] = useState(user?.name || '');
   const [phoneInput, setPhoneInput] = useState(user?.phone || '');
+  const [savingProfile, setSavingProfile] = useState(false);
   const [addingAddress, setAddingAddress] = useState(false);
+
+  useEffect(() => {
+    setNameInput(user?.name || '');
+    setPhoneInput(user?.phone || '');
+  }, [user?.name, user?.phone]);
 
   const [label, setLabel] = useState('Home');
   const [flat, setFlat] = useState('');
@@ -46,16 +53,37 @@ export default function ProfilePage() {
   const [pincode, setPincode] = useState('');
   const [coords, setCoords] = useState({ lat: 12.9855, lng: 77.6412 });
 
-  const handleSaveProfile = (e) => {
+  const handleSaveProfile = async (e) => {
     e.preventDefault();
     if (!user) return;
-    updateProfile({
-      name: nameInput.trim() || user.name,
-      phone: phoneInput.trim() || user.phone,
+    setSavingProfile(true);
+    const res = await updateProfile({
+      full_name: nameInput.trim() || user.name,
+      phone: phoneInput.trim(),
     });
+    setSavingProfile(false);
+
+    if (!res.ok) {
+      showToast({
+        title: 'Update failed',
+        description: res.error || 'Unable to update your profile.',
+        type: 'error',
+      });
+      return;
+    }
+
     showToast({
       title: 'Profile updated',
-      description: 'Saved to local demo account.',
+      description: 'Saved to your local demo profile.',
+      type: 'success',
+    });
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    showToast({
+      title: 'Logged out',
+      description: 'Signed out of your local demo account.',
       type: 'success',
     });
   };
@@ -106,14 +134,14 @@ export default function ProfilePage() {
               <h1 className="font-display text-2xl font-extrabold text-brand-black">
                 {user ? user.name : 'Guest Customer'}
               </h1>
-              <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800 border border-amber-200">
+              <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[11px] font-bold text-amber-800">
                 Demo Profile
               </span>
             </div>
             <p className="mt-0.5 text-xs text-neutral-500">
               {user
-                ? `${user.email} · ${user.phone}`
-                : 'Sign in with a demo account to personalize your profile and sync saved details.'}
+                ? `${user.email}${user.phone ? ` · ${user.phone}` : ''}`
+                : 'Sign in with a local demo account to personalize your profile and saved addresses.'}
             </p>
           </div>
         </div>
@@ -122,7 +150,7 @@ export default function ProfilePage() {
           {user ? (
             <button
               type="button"
-              onClick={logout}
+              onClick={handleLogout}
               className="inline-flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-4 py-2 text-xs font-bold text-red-700 hover:bg-red-100"
             >
               <LogOut className="h-4 w-4" />
@@ -153,7 +181,7 @@ export default function ProfilePage() {
       <div className="mt-4 flex items-start gap-2.5 rounded-2xl border border-amber-200 bg-amber-50 p-3.5 text-xs text-amber-900">
         <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
         <span>
-          <strong>Academic Demo Account:</strong> Profile data, saved addresses, and local order history are persisted in your browser (<code className="font-mono">localStorage</code>) and structured so real backend JWT/OAuth auth can be plugged in later.
+          <strong>Local Demo Authentication:</strong> Account credentials (salted hash), saved addresses, and local order snapshots are stored in your browser (<code className="font-mono">localStorage</code>) and kept separate from the backend PostgreSQL order database.
         </span>
       </div>
 
@@ -400,18 +428,29 @@ export default function ProfilePage() {
           {!user ? (
             <div className="text-center py-6">
               <p className="text-sm font-semibold text-brand-black">
-                Sign in with a demo account to edit profile settings.
+                Sign in with your account to edit profile settings.
               </p>
               <button
                 type="button"
                 onClick={() => openAuthModal('login')}
                 className="mt-4 rounded-xl bg-brand-primary px-5 py-2.5 text-xs font-bold text-white"
               >
-                Open Demo Login
+                Log in
               </button>
             </div>
           ) : (
             <form onSubmit={handleSaveProfile} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-neutral-700">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  value={user.email || ''}
+                  disabled
+                  className="mt-1 w-full cursor-not-allowed rounded-xl border border-neutral-200 bg-surface-muted px-3.5 py-2.5 text-sm text-neutral-500"
+                />
+              </div>
               <div>
                 <label className="block text-xs font-semibold text-neutral-700">
                   Full Name
@@ -431,13 +470,16 @@ export default function ProfilePage() {
                   type="tel"
                   value={phoneInput}
                   onChange={(e) => setPhoneInput(e.target.value)}
+                  placeholder="+91 98765 43210"
                   className="mt-1 w-full rounded-xl border border-neutral-200 bg-surface-soft px-3.5 py-2.5 text-sm"
                 />
               </div>
               <button
                 type="submit"
-                className="rounded-xl bg-brand-primary px-5 py-2.5 text-xs font-bold text-white hover:bg-brand-primaryDark"
+                disabled={savingProfile}
+                className="inline-flex items-center gap-2 rounded-xl bg-brand-primary px-5 py-2.5 text-xs font-bold text-white hover:bg-brand-primaryDark disabled:opacity-60"
               >
+                {savingProfile && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
                 Save Settings
               </button>
             </form>

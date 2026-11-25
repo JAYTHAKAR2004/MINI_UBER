@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Leaf, RotateCcw, Search, SlidersHorizontal } from 'lucide-react';
-import { CATEGORIES, RESTAURANTS } from '../data/restaurants';
+import { Leaf, MapPin, RotateCcw, Search, SlidersHorizontal } from 'lucide-react';
+import { CATEGORIES } from '../data/restaurants';
+import { useLocationContext } from '../context/LocationContext';
+import { fetchRestaurantsByCity } from '../services/restaurantService';
 import RestaurantCard from '../components/RestaurantCard';
 import { RestaurantSkeletonCard } from '../components/SkeletonCard';
 
 export default function RestaurantsPage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const { shortName, lat, lng } = useLocationContext();
   const initialQuery = searchParams.get('q') || '';
   const initialCategory = searchParams.get('category') || 'All';
   const activeTab = searchParams.get('tab') === 'dining' ? 'dining' : 'delivery';
 
+  const [cityRestaurants, setCityRestaurants] = useState([]);
+  const [fetchError, setFetchError] = useState(null);
   const [query, setQuery] = useState(initialQuery);
   const [selectedCategory, setSelectedCategory] = useState(initialCategory);
   const [sortBy, setSortBy] = useState('relevance');
@@ -40,10 +45,28 @@ export default function RestaurantsPage() {
   }, [searchParams]);
 
   useEffect(() => {
+    let active = true;
     setIsLoading(true);
-    const timer = setTimeout(() => setIsLoading(false), 160);
-    return () => clearTimeout(timer);
-  }, [selectedCategory, sortBy, activeTab]);
+    setFetchError(null);
+    fetchRestaurantsByCity({ city: shortName, lat, lng })
+      .then((res) => {
+        if (!active) return;
+        setCityRestaurants(res.restaurants || []);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setCityRestaurants([]);
+        setFetchError(
+          err?.message || `Unable to load restaurants for ${shortName}.`
+        );
+      })
+      .finally(() => {
+        if (active) setIsLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [shortName, lat, lng]);
 
   const handleCategoryChange = (category) => {
     setSelectedCategory(category);
@@ -82,12 +105,13 @@ export default function RestaurantsPage() {
   const filteredRestaurants = useMemo(() => {
     const q = query.trim().toLowerCase();
 
-    const list = RESTAURANTS.filter((r) => {
+    const list = cityRestaurants.filter((r) => {
       if (activeTab === 'dining' && !r.diningOut) return false;
+      if (activeTab === 'delivery' && r.deliveryAvailable === false) return false;
 
       if (
         selectedCategory !== 'All' &&
-        !r.categories.includes(selectedCategory)
+        !(r.categories || []).includes(selectedCategory)
       ) {
         return false;
       }
@@ -107,8 +131,9 @@ export default function RestaurantsPage() {
       const matchesMeta =
         r.name.toLowerCase().includes(q) ||
         r.cuisine.toLowerCase().includes(q) ||
+        (r.area || '').toLowerCase().includes(q) ||
         r.city.toLowerCase().includes(q);
-      const matchesMenu = r.menu.some((item) =>
+      const matchesMenu = (r.menu || []).some((item) =>
         item.name.toLowerCase().includes(q)
       );
       return matchesMeta || matchesMenu;
@@ -120,6 +145,11 @@ export default function RestaurantsPage() {
     if (sortBy === 'eta') {
       return [...list].sort((a, b) => a.etaMinutes - b.etaMinutes);
     }
+    if (sortBy === 'distance') {
+      return [...list].sort(
+        (a, b) => (a.distanceKm ?? 9999) - (b.distanceKm ?? 9999)
+      );
+    }
     if (sortBy === 'costLow') {
       return [...list].sort((a, b) => a.costForTwo - b.costForTwo);
     }
@@ -128,6 +158,7 @@ export default function RestaurantsPage() {
     }
     return list;
   }, [
+    cityRestaurants,
     query,
     activeTab,
     selectedCategory,
@@ -169,8 +200,9 @@ export default function RestaurantsPage() {
           </button>
         </div>
 
-        <span className="rounded-full bg-surface-soft px-3 py-1 text-xs font-medium text-neutral-500">
-          Demo Restaurant Directory
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-surface-soft px-3 py-1 text-xs font-semibold text-neutral-600">
+          <MapPin className="h-3.5 w-3.5 text-brand-primary" />
+          {shortName} Demo Restaurant Directory
         </span>
       </div>
 
@@ -183,7 +215,7 @@ export default function RestaurantsPage() {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search by restaurant, dish, cuisine, or city..."
+            placeholder={`Search in ${shortName} by restaurant, locality, dish, or cuisine...`}
             className="w-full bg-transparent text-sm text-brand-black placeholder:text-neutral-400 focus:outline-none"
           />
         </label>
@@ -267,6 +299,7 @@ export default function RestaurantsPage() {
               className="bg-transparent text-xs font-semibold text-brand-black focus:outline-none"
             >
               <option value="relevance">Sort: Relevance</option>
+              <option value="distance">Sort: Nearest First</option>
               <option value="rating">Sort: Rating High to Low</option>
               <option value="eta">Sort: Fastest Delivery</option>
               <option value="costLow">Sort: Cost for Two (Low)</option>
@@ -301,7 +334,8 @@ export default function RestaurantsPage() {
       <p className="mt-6 text-xs font-medium text-neutral-500">
         Showing{' '}
         <strong className="text-brand-black">{filteredRestaurants.length}</strong>{' '}
-        {filteredRestaurants.length === 1 ? 'restaurant' : 'restaurants'}
+        {filteredRestaurants.length === 1 ? 'restaurant' : 'restaurants'} in{' '}
+        <strong className="text-brand-black">{shortName}</strong>
         {activeTab === 'dining' ? ' for Dining Out' : ' for Delivery'}
       </p>
 
@@ -312,14 +346,22 @@ export default function RestaurantsPage() {
             <RestaurantSkeletonCard key={idx} />
           ))}
         </div>
+      ) : fetchError ? (
+        <div className="mt-8 rounded-3xl border border-red-200 bg-red-50 px-6 py-12 text-center">
+          <h2 className="font-display text-lg font-bold text-red-900">
+            Unable to load {shortName} restaurants
+          </h2>
+          <p className="mt-1 text-sm text-red-700">{fetchError}</p>
+        </div>
       ) : filteredRestaurants.length === 0 ? (
         <div className="mt-8 flex flex-col items-center justify-center rounded-3xl border border-dashed border-neutral-300 bg-surface-soft/50 px-6 py-16 text-center">
           <h2 className="font-display text-lg font-bold text-brand-black">
-            No matching restaurants found
+            No matching restaurants found in {shortName}
           </h2>
           <p className="mt-1 max-w-md text-sm text-neutral-500">
-            Try clearing your search query or switching back to all food
-            categories.
+            {cityRestaurants.length === 0
+              ? `No partner restaurants are currently listed for ${shortName}. Switch to a supported city in the location picker.`
+              : 'Try clearing your search query or switching back to all food categories.'}
           </p>
           <button
             type="button"

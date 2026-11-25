@@ -19,6 +19,10 @@ import httpx
 import redis.asyncio as aioredis
 
 
+from src.resilience.logging_config import get_logger
+from src.resilience.timeout import TimeoutConfig
+
+logger = get_logger("payments.youpi")
 UTR_REGEX = re.compile(r"^[A-Za-z0-9-]{6,35}$")
 TERMINAL_UI_STATES = {"RECONCILED", "FAILED", "EXPIRED", "CANCELLED"}
 
@@ -48,6 +52,11 @@ def get_youpi_config() -> dict:
     except ValueError:
         webhook_tolerance_seconds = 300
     reconcile_admin_token = (os.getenv("YOUPI_RECONCILE_ADMIN_TOKEN") or "").strip()
+    timeout_cfg = TimeoutConfig.from_env()
+    try:
+        http_timeout = max(0.5, float(os.getenv("YOUPI_HTTP_TIMEOUT") or timeout_cfg.http_client_timeout))
+    except ValueError:
+        http_timeout = timeout_cfg.http_client_timeout
 
     session_configured = bool(merchant_id and merchant_api_key)
     webhook_configured = bool(webhook_secret)
@@ -62,6 +71,7 @@ def get_youpi_config() -> dict:
         "upi_method": upi_method,
         "webhook_tolerance_seconds": webhook_tolerance_seconds,
         "reconcile_admin_token": reconcile_admin_token,
+        "http_timeout": http_timeout,
         "session_configured": session_configured,
         "webhook_configured": webhook_configured,
         "configured": configured,
@@ -196,12 +206,19 @@ async def create_youpi_session(
         headers["Idempotency-Key"] = idempotency_key
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=cfg["http_timeout"]) as client:
             resp = await client.post(
                 f"{cfg['api_url']}/api/v1/payments",
                 json=payload,
                 headers=headers,
             )
+    except httpx.TimeoutException as exc:
+        logger.error("YouPI-PG create session timed out after %.2fs: %s", cfg["http_timeout"], exc)
+        raise YouPIGatewayError(
+            status_code=504,
+            detail=f"YouPI-PG payment API timed out after {cfg['http_timeout']:.1f}s: {exc}",
+            code="YOUPI_TIMEOUT",
+        )
     except httpx.HTTPError as exc:
         raise YouPIGatewayError(
             status_code=503,
@@ -261,7 +278,7 @@ async def submit_youpi_manual_utr(payment_id: str, utr: str) -> dict:
         )
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=cfg["http_timeout"]) as client:
             resp = await client.post(
                 f"{cfg['api_url']}/api/v1/checkout/{urllib.parse.quote(payment_id)}/manual-utr",
                 json={"utr": clean_utr},
@@ -271,6 +288,13 @@ async def submit_youpi_manual_utr(payment_id: str, utr: str) -> dict:
                     "X-Merchant-Key": cfg["merchant_api_key"],
                 },
             )
+    except httpx.TimeoutException as exc:
+        logger.error("YouPI-PG UTR submission timed out after %.2fs: %s", cfg["http_timeout"], exc)
+        raise YouPIGatewayError(
+            status_code=504,
+            detail=f"YouPI-PG UTR submission timed out after {cfg['http_timeout']:.1f}s: {exc}",
+            code="YOUPI_TIMEOUT",
+        )
     except httpx.HTTPError as exc:
         raise YouPIGatewayError(
             status_code=503,
@@ -296,8 +320,15 @@ async def fetch_youpi_qr_svg(payment_id: str) -> bytes:
     cfg = get_youpi_config()
     url = f"{cfg['checkout_url']}/checkout/{urllib.parse.quote(payment_id)}/qr.svg"
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=cfg["http_timeout"]) as client:
             resp = await client.get(url)
+    except httpx.TimeoutException as exc:
+        logger.error("YouPI-PG QR SVG fetch timed out after %.2fs: %s", cfg["http_timeout"], exc)
+        raise YouPIGatewayError(
+            status_code=504,
+            detail=f"YouPI-PG Checkout Portal timed out after {cfg['http_timeout']:.1f}s: {exc}",
+            code="YOUPI_TIMEOUT",
+        )
     except httpx.HTTPError as exc:
         raise YouPIGatewayError(
             status_code=503,
@@ -321,7 +352,7 @@ async def fetch_youpi_payment_details(payment_id: str) -> dict:
         raise YouPIGatewayError(503, "YouPI-PG merchant credentials are not configured.", "YOUPI_NOT_CONFIGURED")
 
     try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
+        async with httpx.AsyncClient(timeout=cfg["http_timeout"]) as client:
             resp = await client.get(
                 f"{cfg['api_url']}/api/v1/payments/{urllib.parse.quote(payment_id)}",
                 headers={
@@ -329,6 +360,9 @@ async def fetch_youpi_payment_details(payment_id: str) -> dict:
                     "X-Merchant-Key": cfg["merchant_api_key"],
                 },
             )
+    except httpx.TimeoutException as exc:
+        logger.error("YouPI-PG query timed out after %.2fs: %s", cfg["http_timeout"], exc)
+        raise YouPIGatewayError(504, f"YouPI-PG query timed out: {exc}", "YOUPI_TIMEOUT")
     except httpx.HTTPError as exc:
         raise YouPIGatewayError(503, f"Unable to query YouPI-PG: {exc}", "YOUPI_UNREACHABLE")
 

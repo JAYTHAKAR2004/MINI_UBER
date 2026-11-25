@@ -16,7 +16,7 @@ import {
 import { ORDER_STAGES, useOrders } from '../context/OrderContext';
 import { useLocationContext } from '../context/LocationContext';
 import { useToast } from '../context/ToastContext';
-import { RESTAURANTS } from '../data/restaurants';
+import { fetchRestaurantsByCity } from '../services/restaurantService';
 import { FINAL_TEST_METRICS } from '../data/analyticsBaseline';
 import { predictETA } from '../services/etaService';
 import { formatPrice, formatTimestamp } from '../utils/formatters';
@@ -68,11 +68,18 @@ export default function OrderTrackingPage() {
   const handleRefreshEta = async () => {
     if (!activeOrder || refreshingEta) return;
     setRefreshingEta(true);
-    const rCoords = activeOrder.restaurantCoordinates || { lat: 12.9716, lng: 77.5946 };
-    const dCoords = activeOrder.deliveryCoordinates || { lat: 12.9855, lng: 77.6412 };
-    const dist =
-      calculateHaversineKm(rCoords.lat, rCoords.lng, dCoords.lat, dCoords.lng) ??
-      5.2;
+    const rCoords = activeOrder.restaurantCoordinates;
+    const dCoords = activeOrder.deliveryCoordinates;
+    if (!rCoords || !dCoords || areCoordinatesValid(rCoords.lat, rCoords.lng, dCoords.lat, dCoords.lng) !== 1) {
+      showToast({
+        title: 'Cannot refresh ETA',
+        description: 'Order is missing valid restaurant or delivery coordinates.',
+        type: 'error',
+      });
+      setRefreshingEta(false);
+      return;
+    }
+    const dist = calculateHaversineKm(rCoords.lat, rCoords.lng, dCoords.lat, dCoords.lng);
 
     const now = new Date();
     const jsDay = now.getDay();
@@ -80,17 +87,18 @@ export default function OrderTrackingPage() {
 
     try {
       const res = await predictETA({
+        restaurant_id: activeOrder.restaurant?.id,
+        selected_city: activeOrder.restaurant?.city,
+        restaurant_lat: rCoords.lat,
+        restaurant_lon: rCoords.lng,
+        delivery_lat: dCoords.lat,
+        delivery_lon: dCoords.lng,
         Delivery_person_Age: 28,
         Delivery_person_Ratings: 4.7,
         Vehicle_condition: 2,
         multiple_deliveries: 0,
         distance_km: dist,
-        coordinates_valid: areCoordinatesValid(
-          rCoords.lat,
-          rCoords.lng,
-          dCoords.lat,
-          dCoords.lng
-        ),
+        coordinates_valid: 1,
         order_time_missing: 0,
         order_hour: now.getHours(),
         order_day: now.getDate(),
@@ -123,26 +131,34 @@ export default function OrderTrackingPage() {
 
   const handleLoadSampleOrder = async () => {
     setCreatingDemo(true);
-    const sampleRest = RESTAURANTS[0];
-    const dist =
-      calculateHaversineKm(
+    try {
+      const catalog = await fetchRestaurantsByCity({
+        city: activePreset.shortName,
+        lat: activePreset.deliveryLat,
+        lng: activePreset.deliveryLon,
+      });
+      const sampleRest = catalog.restaurants?.[0];
+      if (!sampleRest || !sampleRest.coordinates) {
+        throw new Error(`No demo restaurants found in ${activePreset.shortName}.`);
+      }
+      const dist = calculateHaversineKm(
         sampleRest.coordinates.lat,
         sampleRest.coordinates.lng,
         activePreset.deliveryLat,
         activePreset.deliveryLon
-      ) ?? 5.28;
+      );
 
-    const now = new Date();
-    const jsDay = now.getDay();
-    const pythonWeekday = jsDay === 0 ? 6 : jsDay - 1;
+      const now = new Date();
+      const jsDay = now.getDay();
+      const pythonWeekday = jsDay === 0 ? 6 : jsDay - 1;
 
-    let etaMinutes = sampleRest.etaMinutes;
-    let etaSource = 'restaurant-estimate';
-    let telemetry = null;
-    let predictionTimestamp = null;
-
-    try {
       const res = await predictETA({
+        restaurant_id: sampleRest.id,
+        selected_city: sampleRest.city,
+        restaurant_lat: sampleRest.coordinates.lat,
+        restaurant_lon: sampleRest.coordinates.lng,
+        delivery_lat: activePreset.deliveryLat,
+        delivery_lon: activePreset.deliveryLon,
         Delivery_person_Age: 29,
         Delivery_person_Ratings: 4.8,
         Vehicle_condition: 2,
@@ -167,66 +183,78 @@ export default function OrderTrackingPage() {
         City: sampleRest.modelCity,
       });
       recordPrediction(res);
-      etaMinutes = res.predicted_eta_minutes;
-      etaSource = 'live-ml';
-      telemetry = res;
-      predictionTimestamp = new Date().toISOString();
-    } catch {
-      // Backend unavailable: keep restaurant-estimate fallback honestly
+      const etaMinutes = res.predicted_eta_minutes;
+      const etaSource = 'live-ml';
+      const telemetry = res;
+      const predictionTimestamp = new Date().toISOString();
+
+      const itemOne = sampleRest.menu[0];
+      const itemTwo = sampleRest.menu[2] || sampleRest.menu[0];
+      const sub = itemOne.price + itemTwo.price;
+      const tax = Math.round(sub * 0.05 * 100) / 100;
+
+      const demoOrder = placeOrder({
+        restaurant: {
+          id: sampleRest.id,
+          name: sampleRest.name,
+          city: sampleRest.city,
+          address: sampleRest.address,
+          coordinates: sampleRest.coordinates,
+          modelCity: sampleRest.modelCity,
+        },
+        items: [
+          {
+            id: itemOne.id,
+            name: itemOne.name,
+            price: itemOne.price,
+            isVeg: itemOne.isVeg,
+            orderType: itemOne.orderType,
+            quantity: 1,
+          },
+          {
+            id: itemTwo.id,
+            name: itemTwo.name,
+            price: itemTwo.price,
+            isVeg: itemTwo.isVeg,
+            orderType: itemTwo.orderType,
+            quantity: 1,
+          },
+        ],
+        subtotal: sub,
+        deliveryFee: sampleRest.deliveryFee,
+        platformFee: 6,
+        taxes: tax,
+        discount: 0,
+        total: Math.round((sub + sampleRest.deliveryFee + 6 + tax) * 100) / 100,
+        deliveryAddress: activePreset.defaultAddress,
+        deliveryCoordinates: {
+          lat: activePreset.deliveryLat,
+          lng: activePreset.deliveryLon,
+        },
+        restaurantCoordinates: sampleRest.coordinates,
+        customerName: 'Guest Customer',
+        customerPhone: '+91 98765 00000',
+        paymentMethod: 'cod',
+        paymentStatus: 'COD_DEMO',
+        distanceKm: dist,
+        etaMinutes,
+        etaSource,
+        predictionTelemetry: telemetry,
+        predictionTimestamp,
+        stageIndex: 3,
+        orderStatus: ORDER_STAGES[3],
+      });
+
+      navigate(`/track/${demoOrder.id}`, { replace: true });
+    } catch (err) {
+      showToast({
+        title: 'Unable to load sample order',
+        description: err?.message || 'Ensure backend API is running and coordinates are valid.',
+        type: 'error',
+      });
+    } finally {
+      setCreatingDemo(false);
     }
-
-    const demoOrder = placeOrder({
-      restaurant: {
-        name: sampleRest.name,
-        address: sampleRest.address,
-        coordinates: sampleRest.coordinates,
-        modelCity: sampleRest.modelCity,
-      },
-      items: [
-        {
-          id: sampleRest.menu[0].id,
-          name: sampleRest.menu[0].name,
-          price: sampleRest.menu[0].price,
-          isVeg: sampleRest.menu[0].isVeg,
-          orderType: sampleRest.menu[0].orderType,
-          quantity: 1,
-        },
-        {
-          id: sampleRest.menu[2].id,
-          name: sampleRest.menu[2].name,
-          price: sampleRest.menu[2].price,
-          isVeg: sampleRest.menu[2].isVeg,
-          orderType: sampleRest.menu[2].orderType,
-          quantity: 1,
-        },
-      ],
-      subtotal: 668,
-      deliveryFee: sampleRest.deliveryFee,
-      platformFee: 6,
-      taxes: 33.4,
-      discount: 0,
-      total: 736.4,
-      deliveryAddress: activePreset.defaultAddress,
-      deliveryCoordinates: {
-        lat: activePreset.deliveryLat,
-        lng: activePreset.deliveryLon,
-      },
-      restaurantCoordinates: sampleRest.coordinates,
-      customerName: 'Guest Customer',
-      customerPhone: '+91 98765 00000',
-      paymentMethod: 'upi',
-      paymentStatus: 'DEMO',
-      distanceKm: dist,
-      etaMinutes,
-      etaSource,
-      predictionTelemetry: telemetry,
-      predictionTimestamp,
-      stageIndex: 3,
-      orderStatus: ORDER_STAGES[3],
-    });
-
-    setCreatingDemo(false);
-    navigate(`/track/${demoOrder.id}`, { replace: true });
   };
 
   if (!activeOrder) {

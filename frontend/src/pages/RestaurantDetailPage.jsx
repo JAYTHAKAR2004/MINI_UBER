@@ -1,10 +1,12 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Clock,
   Leaf,
+  Loader2,
   MapPin,
   Minus,
   Navigation,
@@ -14,13 +16,14 @@ import {
   Star,
   X,
 } from 'lucide-react';
-import { RESTAURANTS } from '../data/restaurants';
+import { fetchRestaurantBySlug } from '../services/restaurantService';
 import FoodImage from '../components/FoodImage';
 import VegBadge from '../components/VegBadge';
 import DeliveryTrackingMap from '../components/maps/DeliveryTrackingMap';
 import { useCart } from '../context/CartContext';
 import { useLocationContext } from '../context/LocationContext';
 import { useToast } from '../context/ToastContext';
+import { citiesMatch, normalizeCitySlug } from '../utils/haversine';
 import { formatPrice } from '../utils/formatters';
 
 export default function RestaurantDetailPage() {
@@ -32,18 +35,35 @@ export default function RestaurantDetailPage() {
     subtotal,
     addItem,
     updateQuantity,
+    clearIncompatibleCart,
   } = useCart();
-  const { lat, lng, address } = useLocationContext();
+  const { shortName, lat, lng, address, selectCityPreset } = useLocationContext();
   const { showToast } = useToast();
 
-  const restaurant = useMemo(
-    () => RESTAURANTS.find((r) => r.slug === slug),
-    [slug]
-  );
+  const [restaurant, setRestaurant] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    setLoading(true);
+    fetchRestaurantBySlug(slug, { lat, lng })
+      .then((res) => {
+        if (active) setRestaurant(res);
+      })
+      .catch(() => {
+        if (active) setRestaurant(null);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [slug, lat, lng]);
 
   const menuCategories = useMemo(() => {
     if (!restaurant) return [];
-    const cats = [...new Set(restaurant.menu.map((m) => m.category))];
+    const cats = [...new Set((restaurant.menu || []).map((m) => m.category))];
     return ['All', ...cats];
   }, [restaurant]);
 
@@ -51,6 +71,15 @@ export default function RestaurantDetailPage() {
   const [menuSearch, setMenuSearch] = useState('');
   const [vegOnly, setVegOnly] = useState(false);
   const [showMapModal, setShowMapModal] = useState(false);
+
+  if (loading) {
+    return (
+      <div className="mx-auto flex max-w-3xl items-center justify-center gap-2 px-4 py-24 text-sm text-neutral-500">
+        <Loader2 className="h-5 w-5 animate-spin text-brand-primary" />
+        Loading restaurant menu...
+      </div>
+    );
+  }
 
   if (!restaurant) {
     return (
@@ -97,7 +126,38 @@ export default function RestaurantDetailPage() {
     return found ? found.quantity : 0;
   };
 
+  const isCityMismatch = !citiesMatch(restaurant.city, shortName);
+  const isDeliveryBlocked = isCityMismatch || restaurant.deliveryAvailable === false;
+
+  const handleSwitchCityToRestaurant = () => {
+    const cleared = clearIncompatibleCart(restaurant.city);
+    selectCityPreset(normalizeCitySlug(restaurant.city));
+    showToast({
+      title: `Switched delivery city to ${restaurant.city}`,
+      description: cleared
+        ? `Previous cart from ${cleared.city} was cleared.`
+        : `You can now order from ${restaurant.name}.`,
+      type: 'success',
+    });
+  };
+
   const handleAdd = (menuItem) => {
+    if (isCityMismatch) {
+      showToast({
+        title: `Cannot order across cities`,
+        description: `${restaurant.name} delivers in ${restaurant.city}, not ${shortName}. Switch your location first.`,
+        type: 'error',
+      });
+      return;
+    }
+    if (restaurant.deliveryAvailable === false) {
+      showToast({
+        title: 'Delivery unavailable',
+        description: `${restaurant.name} is not accepting delivery orders right now.`,
+        type: 'error',
+      });
+      return;
+    }
     addItem(menuItem, restaurant);
     showToast({
       title: `Added ${menuItem.name}`,
@@ -112,6 +172,28 @@ export default function RestaurantDetailPage() {
   return (
     <div className="bg-white pb-24">
       <div className="mx-auto max-w-7xl px-4 pt-5 sm:px-6 lg:px-8">
+        {isCityMismatch && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950">
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <div>
+                <p className="font-bold">
+                  Cross-city restaurant selected ({restaurant.city} vs {shortName})
+                </p>
+                <p className="mt-0.5 text-amber-800">
+                  {restaurant.name} only delivers in <strong>{restaurant.city}</strong>. Switch your delivery location to {restaurant.city} to add items and compute an accurate ETA.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleSwitchCityToRestaurant}
+              className="rounded-xl bg-brand-primary px-4 py-2 text-xs font-bold text-white hover:bg-brand-primaryDark"
+            >
+              Switch to {restaurant.city}
+            </button>
+          </div>
+        )}
         {/* Zomato Breadcrumbs */}
         <nav className="flex flex-wrap items-center gap-1.5 text-xs text-neutral-500">
           <Link to="/" className="hover:text-brand-primary">
@@ -379,8 +461,9 @@ export default function RestaurantDetailPage() {
                           {qty === 0 ? (
                             <button
                               type="button"
+                              disabled={isDeliveryBlocked}
                               onClick={() => handleAdd(item)}
-                              className="inline-flex w-24 items-center justify-center gap-1 rounded-lg border border-brand-primaryBorder bg-white py-1.5 text-xs font-bold uppercase text-brand-primary shadow-card transition-colors hover:bg-brand-primary hover:text-white"
+                              className="inline-flex w-24 items-center justify-center gap-1 rounded-lg border border-brand-primaryBorder bg-white py-1.5 text-xs font-bold uppercase text-brand-primary shadow-card transition-colors hover:bg-brand-primary hover:text-white disabled:cursor-not-allowed disabled:border-neutral-200 disabled:bg-neutral-100 disabled:text-neutral-400"
                             >
                               ADD
                               <Plus className="h-3.5 w-3.5" />

@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { ShieldAlert, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { AlertCircle, Loader2, ShieldAlert, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import BrandLogo from './BrandLogo';
@@ -12,45 +12,77 @@ export default function AuthModal() {
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const submitLockRef = useRef(false);
 
   useEffect(() => {
+    submitLockRef.current = false;
     setError('');
+    setSubmitting(false);
+    setPassword('');
   }, [authModalMode]);
 
   if (!authModalMode) return null;
 
   const isSignup = authModalMode === 'signup';
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
+    if (submitLockRef.current || submitting) {
+      return;
+    }
+
+    setError('');
+
     if (!email.trim() || !email.includes('@')) {
       setError('Please enter a valid email address.');
       return;
     }
     if (isSignup && name.trim().length < 2) {
-      setError('Please enter your full name.');
+      setError('Please enter your full name (at least 2 characters).');
       return;
     }
-    if (password.trim().length < 4) {
-      setError('Enter a demo password (at least 4 characters).');
+    if (password.length < 6) {
+      setError('Enter a demo password (at least 6 characters).');
       return;
     }
 
-    if (isSignup) {
-      signup({ name, email, phone });
+    submitLockRef.current = true;
+    setSubmitting(true);
+    try {
+      if (isSignup) {
+        const res = await signup({
+          fullName: name.trim(),
+          email,
+          phone,
+          password,
+        });
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
+        showToast({
+          title: `Welcome, ${res.user?.name || name.trim()}!`,
+          description: 'Signed in with local browser demo authentication.',
+          type: 'success',
+        });
+        return;
+      }
+
+      const res = await login({ email, password });
+      if (!res.ok) {
+        setError(res.error);
+        return;
+      }
       showToast({
-        title: `Welcome, ${name.trim()}!`,
-        description: 'Signed in to local Academic Demo profile.',
+        title: `Welcome back, ${res.user?.name || email.trim()}!`,
+        description: 'Signed in to your local demo account.',
         type: 'success',
       });
-    } else {
-      login({ email, name, phone });
-      showToast({
-        title: 'Signed in (Demo Account)',
-        description: 'Saved addresses & order history unlocked locally.',
-        type: 'success',
-      });
+    } finally {
+      submitLockRef.current = false;
+      setSubmitting(false);
     }
   };
 
@@ -78,18 +110,18 @@ export default function AuthModal() {
           id="auth-modal-title"
           className="mt-5 font-display text-2xl font-extrabold text-brand-black"
         >
-          {isSignup ? 'Sign up' : 'Log in'}
+          {isSignup ? 'Sign up (Demo)' : 'Log in (Demo)'}
         </h2>
         <p className="mt-1 text-xs text-neutral-500">
           {isSignup
             ? 'Create a local demo profile to manage saved addresses and orders.'
-            : 'Access your saved delivery addresses and order history.'}
+            : 'Access your local saved delivery addresses and order history.'}
         </p>
 
         <div className="mt-4 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-900">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <span>
-            <strong>Demo Account Only:</strong> Profile state is stored locally in your browser (`localStorage`). No production authentication server is connected.
+            <strong>Demo Authentication Only:</strong> Stored locally in your browser (with salted SHA-256 hashing; never plaintext) and kept separate from the backend order database. No email verification or production auth server is connected.
           </span>
         </div>
 
@@ -101,6 +133,7 @@ export default function AuthModal() {
               </label>
               <input
                 type="text"
+                autoComplete="name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Aarav Mehta"
@@ -115,6 +148,7 @@ export default function AuthModal() {
             </label>
             <input
               type="email"
+              autoComplete="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="name@example.com"
@@ -129,6 +163,7 @@ export default function AuthModal() {
               </label>
               <input
                 type="tel"
+                autoComplete="tel"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="+91 98765 43210"
@@ -143,20 +178,34 @@ export default function AuthModal() {
             </label>
             <input
               type="password"
+              autoComplete={isSignup ? 'new-password' : 'current-password'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••"
+              placeholder="At least 6 characters"
               className="mt-1 w-full rounded-xl border border-neutral-200 bg-surface-soft px-3.5 py-2.5 text-sm focus:border-neutral-400 focus:bg-white focus:outline-none"
             />
           </div>
 
-          {error && <p className="text-xs font-medium text-red-600">{error}</p>}
+          {error && (
+            <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-700">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600" />
+              <span>{error}</span>
+            </div>
+          )}
 
           <button
             type="submit"
-            className="w-full rounded-xl bg-brand-primary py-3 text-sm font-bold text-white shadow-soft transition-colors hover:bg-brand-primaryDark"
+            disabled={submitting}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-brand-primary py-3 text-sm font-bold text-white shadow-soft transition-colors hover:bg-brand-primaryDark disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isSignup ? 'Create Demo Account' : 'Continue to Zomato Demo'}
+            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+            {isSignup
+              ? submitting
+                ? 'Creating Demo Account...'
+                : 'Create Demo Account'
+              : submitting
+              ? 'Signing in...'
+              : 'Continue to Zomato Demo'}
           </button>
         </form>
 
@@ -174,13 +223,13 @@ export default function AuthModal() {
             </>
           ) : (
             <>
-              New to Mini-Uber-ETA?{' '}
+              New to Zomato?{' '}
               <button
                 type="button"
                 onClick={() => openAuthModal('signup')}
                 className="font-bold text-brand-primary hover:underline"
               >
-                Create account
+                Create demo account
               </button>
             </>
           )}
@@ -189,4 +238,3 @@ export default function AuthModal() {
     </div>
   );
 }
-

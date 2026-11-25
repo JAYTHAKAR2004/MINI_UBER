@@ -1,7 +1,10 @@
 import axios from 'axios';
 
-export const RAW_API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+export const RAW_API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+)
+  .trim()
+  .replace('://localhost', '://127.0.0.1');
 
 const useProxy = import.meta.env.VITE_USE_PROXY !== 'false';
 export const RESOLVED_BASE_URL = useProxy ? '/api' : RAW_API_BASE_URL;

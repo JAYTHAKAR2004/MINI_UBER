@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Check, MapPin, X } from 'lucide-react';
 import { CITY_PRESETS } from '../utils/haversine';
 import { useLocationContext } from '../context/LocationContext';
+import { useCart } from '../context/CartContext';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import LocationPickerMap from './maps/LocationPickerMap';
@@ -9,6 +10,7 @@ import LocationPickerMap from './maps/LocationPickerMap';
 export default function LocationModal({ isOpen, onClose }) {
   const { cityId, lat, lng, address, selectCityPreset, setCustomLocation } =
     useLocationContext();
+  const { clearIncompatibleCart } = useCart();
   const { savedAddresses } = useAuth();
   const { showToast } = useToast();
 
@@ -22,9 +24,22 @@ export default function LocationModal({ isOpen, onClose }) {
 
   if (!isOpen) return null;
 
+  const notifyCitySwitch = (nextCityName) => {
+    const cleared = clearIncompatibleCart(nextCityName);
+    if (cleared) {
+      showToast({
+        title: `Cart cleared for ${nextCityName}`,
+        description: `${cleared.name} delivers in ${cleared.city}, so incompatible items were removed.`,
+        type: 'info',
+      });
+    }
+  };
+
   const handleConfirmMapPin = () => {
+    const nextCity = picked.city || 'Custom Location';
+    notifyCitySwitch(nextCity);
     setCustomLocation({
-      shortName: picked.city || 'Custom Location',
+      shortName: nextCity,
       address: picked.street
         ? `${picked.street}${picked.city ? `, ${picked.city}` : ''}`
         : picked.displayName,
@@ -73,7 +88,7 @@ export default function LocationModal({ isOpen, onClose }) {
         {/* City Presets */}
         <div className="mt-4">
           <p className="text-[11px] font-bold uppercase tracking-wider text-neutral-400">
-            Popular Cities
+            Supported Cities ({CITY_PRESETS.length})
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             {CITY_PRESETS.map((city) => {
@@ -83,7 +98,13 @@ export default function LocationModal({ isOpen, onClose }) {
                   key={city.id}
                   type="button"
                   onClick={() => {
+                    notifyCitySwitch(city.shortName);
                     selectCityPreset(city.id);
+                    showToast({
+                      title: `Location set to ${city.shortName}`,
+                      description: `Showing restaurants delivering in ${city.shortName}.`,
+                      type: 'success',
+                    });
                     onClose();
                   }}
                   className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
@@ -112,6 +133,7 @@ export default function LocationModal({ isOpen, onClose }) {
                   key={addr.id}
                   type="button"
                   onClick={() => {
+                    notifyCitySwitch(addr.city);
                     setCustomLocation({
                       shortName: addr.city,
                       address: [addr.flat, addr.street, addr.city, addr.pincode]

@@ -65,32 +65,25 @@ export const PROMO_BANNERS = [
 
 export const CATEGORIES = [
   {
-    id: 'Pizza',
-    name: 'Pizza',
-    tagline: 'Wood-fired & sourdough',
-    image:
-      'https://images.unsplash.com/photo-1513104890138-7c749659a591?auto=format&fit=crop&w=600&q=80',
-  },
-  {
-    id: 'Burgers',
-    name: 'Burgers',
-    tagline: 'Smashed & brioche',
-    image:
-      'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=600&q=80',
-  },
-  {
-    id: 'Biryani',
-    name: 'Biryani',
-    tagline: 'Dum-cooked aromatic rice',
-    image:
-      'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80',
-  },
-  {
     id: 'North Indian',
     name: 'North Indian',
     tagline: 'Tandoor & rich curries',
     image:
       'https://images.unsplash.com/photo-1585937421612-70a008356fbe?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'Gujarati',
+    name: 'Gujarati',
+    tagline: 'Thalis, dhokla & farsan',
+    image:
+      'https://images.unsplash.com/photo-1601050690597-df0568f70950?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'Punjabi',
+    name: 'Punjabi',
+    tagline: 'Kulchas, chole & lassi',
+    image:
+      'https://images.unsplash.com/photo-1603894584373-5ac82b2ae398?auto=format&fit=crop&w=600&q=80',
   },
   {
     id: 'South Indian',
@@ -107,32 +100,39 @@ export const CATEGORIES = [
       'https://images.unsplash.com/photo-1563245372-f21724e3856d?auto=format&fit=crop&w=600&q=80',
   },
   {
+    id: 'Italian',
+    name: 'Italian',
+    tagline: 'Wood-fired pizza & pasta',
+    image:
+      'https://images.unsplash.com/photo-1574071318508-1cdbab80d002?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'Fast Food',
+    name: 'Fast Food',
+    tagline: 'Burgers, fries & rolls',
+    image:
+      'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?auto=format&fit=crop&w=600&q=80',
+  },
+  {
+    id: 'Biryani',
+    name: 'Biryani',
+    tagline: 'Dum-cooked aromatic rice',
+    image:
+      'https://images.unsplash.com/photo-1563379091339-03b21ab4a4f8?auto=format&fit=crop&w=600&q=80',
+  },
+  {
     id: 'Desserts',
     name: 'Desserts',
-    tagline: 'Tarts, mithai & gelato',
+    tagline: 'Cakes, mithai & gelato',
     image:
       'https://images.unsplash.com/photo-1551024601-bec78aea704b?auto=format&fit=crop&w=600&q=80',
   },
   {
-    id: 'Cakes',
-    name: 'Cakes',
-    tagline: 'Celebration & truffle slices',
+    id: 'Cafes',
+    name: 'Cafes',
+    tagline: 'Coffee, bakes & bowls',
     image:
-      'https://images.unsplash.com/photo-1578985545062-69928b1d9587?auto=format&fit=crop&w=600&q=80',
-  },
-  {
-    id: 'Rolls',
-    name: 'Rolls',
-    tagline: 'Flaky parotta kathi wraps',
-    image:
-      'https://images.unsplash.com/photo-1626700051175-6818013e1d4f?auto=format&fit=crop&w=600&q=80',
-  },
-  {
-    id: 'Healthy Food',
-    name: 'Healthy Food',
-    tagline: 'Grain bowls & cold-press',
-    image:
-      'https://images.unsplash.com/photo-1512621776951-a57141f2eefd?auto=format&fit=crop&w=600&q=80',
+      'https://images.unsplash.com/photo-1509042239860-f550ce710b93?auto=format&fit=crop&w=600&q=80',
   },
 ];
 

@@ -1,37 +1,61 @@
 import { createContext, useContext, useEffect, useState } from 'react';
-import { CITY_PRESETS } from '../utils/haversine';
+import {
+  CITY_PRESETS,
+  normalizeCityName,
+  normalizeCitySlug,
+} from '../utils/haversine';
 
 const STORAGE_KEY = 'mini_uber_location_v2';
 const LocationContext = createContext(null);
 
 function inferModelCity(cityName = '') {
-  const normalized = cityName.toLowerCase();
-  if (
-    ['bengaluru', 'bangalore', 'mumbai', 'hyderabad', 'delhi', 'new delhi', 'chennai', 'kolkata'].some(
-      (c) => normalized.includes(c)
-    )
-  ) {
-    return 'Metropolitian';
-  }
+  const slug = normalizeCitySlug(cityName);
+  const preset = CITY_PRESETS.find((c) => c.id === slug);
+  if (preset) return preset.modelCity;
   return 'Urban';
 }
 
 export function LocationProvider({ children }) {
   const [locationState, setLocationState] = useState(() => {
+    const defaultPreset =
+      CITY_PRESETS.find((c) => c.id === 'bengaluru') || CITY_PRESETS[0];
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const normalizedSlug = normalizeCitySlug(
+          parsed.shortName || parsed.cityId || defaultPreset.id
+        );
+        const matched = CITY_PRESETS.find((c) => c.id === normalizedSlug);
+        return {
+          cityId: matched ? matched.id : normalizedSlug || defaultPreset.id,
+          shortName: matched
+            ? matched.shortName
+            : normalizeCityName(parsed.shortName) || defaultPreset.shortName,
+          modelCity:
+            matched?.modelCity ||
+            parsed.modelCity ||
+            inferModelCity(parsed.shortName),
+          address: parsed.address || matched?.defaultAddress || defaultPreset.defaultAddress,
+          lat: Number.isFinite(Number(parsed.lat))
+            ? Number(parsed.lat)
+            : matched?.deliveryLat ?? defaultPreset.deliveryLat,
+          lng: Number.isFinite(Number(parsed.lng))
+            ? Number(parsed.lng)
+            : matched?.deliveryLon ?? defaultPreset.deliveryLon,
+          source: parsed.source || 'preset',
+        };
+      }
     } catch {
       // ignore storage errors
     }
-    const initial = CITY_PRESETS[0];
     return {
-      cityId: initial.id,
-      shortName: initial.shortName,
-      modelCity: initial.modelCity,
-      address: initial.defaultAddress,
-      lat: initial.deliveryLat,
-      lng: initial.deliveryLon,
+      cityId: defaultPreset.id,
+      shortName: defaultPreset.shortName,
+      modelCity: defaultPreset.modelCity,
+      address: defaultPreset.defaultAddress,
+      lat: defaultPreset.deliveryLat,
+      lng: defaultPreset.deliveryLon,
       source: 'preset',
     };
   });
@@ -45,9 +69,10 @@ export function LocationProvider({ children }) {
   }, [locationState]);
 
   const selectCityPreset = (cityId) => {
-    const preset = CITY_PRESETS.find((c) => c.id === cityId);
-    if (!preset) return;
-    setLocationState({
+    const slug = normalizeCitySlug(cityId);
+    const preset = CITY_PRESETS.find((c) => c.id === slug);
+    if (!preset) return null;
+    const nextState = {
       cityId: preset.id,
       shortName: preset.shortName,
       modelCity: preset.modelCity,
@@ -55,7 +80,9 @@ export function LocationProvider({ children }) {
       lat: preset.deliveryLat,
       lng: preset.deliveryLon,
       source: 'preset',
-    });
+    };
+    setLocationState(nextState);
+    return nextState;
   };
 
   const setCustomAddress = (address) => {
@@ -74,11 +101,18 @@ export function LocationProvider({ children }) {
     cityId,
     source = 'map',
   }) => {
+    const resolvedShortName = normalizeCityName(shortName || locationState.shortName);
+    const resolvedSlug = normalizeCitySlug(cityId || resolvedShortName || locationState.cityId);
+    const matchedPreset = CITY_PRESETS.find((c) => c.id === resolvedSlug);
+
     setLocationState((prev) => ({
-      cityId: cityId || prev.cityId,
-      shortName: shortName || prev.shortName,
-      modelCity: modelCity || inferModelCity(shortName || prev.shortName),
-      address: address || prev.address,
+      cityId: resolvedSlug || prev.cityId,
+      shortName: matchedPreset ? matchedPreset.shortName : resolvedShortName || prev.shortName,
+      modelCity:
+        modelCity ||
+        matchedPreset?.modelCity ||
+        inferModelCity(resolvedShortName || prev.shortName),
+      address: address || matchedPreset?.defaultAddress || prev.address,
       lat: Number.isFinite(Number(lat)) ? Number(lat) : prev.lat,
       lng: Number.isFinite(Number(lng)) ? Number(lng) : prev.lng,
       source,
@@ -86,7 +120,9 @@ export function LocationProvider({ children }) {
   };
 
   const activePreset =
-    CITY_PRESETS.find((c) => c.id === locationState.cityId) || CITY_PRESETS[0];
+    CITY_PRESETS.find((c) => c.id === locationState.cityId) ||
+    CITY_PRESETS.find((c) => c.id === 'bengaluru') ||
+    CITY_PRESETS[0];
 
   return (
     <LocationContext.Provider

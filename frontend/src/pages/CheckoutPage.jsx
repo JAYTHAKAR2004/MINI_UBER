@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
   Briefcase,
   Check,
@@ -35,6 +36,9 @@ import UpiPaymentModal from '../components/UpiPaymentModal';
 import {
   areCoordinatesValid,
   calculateHaversineKm,
+  citiesMatch,
+  MAX_DELIVERY_DISTANCE_KM,
+  normalizeCitySlug,
 } from '../utils/haversine';
 import { FINAL_TEST_METRICS } from '../data/analyticsBaseline';
 import { formatPrice } from '../utils/formatters';
@@ -70,14 +74,19 @@ export default function CheckoutPage() {
     appliedPromo,
     total,
     clearCart,
+    clearIncompatibleCart,
   } = useCart();
-  const { shortName, modelCity } = useLocationContext();
+  const { shortName, lat, lng, modelCity, selectCityPreset } = useLocationContext();
   const { user, savedAddresses, addAddress } = useAuth();
   const { placeOrder, recordPrediction } = useOrders();
   const { showToast } = useToast();
 
+  const matchingAddresses = useMemo(
+    () => savedAddresses.filter((a) => citiesMatch(a.city, shortName)),
+    [savedAddresses, shortName]
+  );
   const defaultAddr =
-    savedAddresses.find((a) => a.isDefault) || savedAddresses[0] || null;
+    matchingAddresses.find((a) => a.isDefault) || matchingAddresses[0] || null;
 
   const [selectedAddressId, setSelectedAddressId] = useState(
     defaultAddr?.id || 'new'
@@ -88,15 +97,32 @@ export default function CheckoutPage() {
   const [flatNo, setFlatNo] = useState('');
   const [street, setStreet] = useState('');
   const [landmark, setLandmark] = useState('');
-  const [cityName, setCityName] = useState(shortName || 'Bengaluru');
+  const [cityName, setCityName] = useState(shortName);
   const [pincode, setPincode] = useState('');
   const [pinCoords, setPinCoords] = useState({
-    lat: defaultAddr?.lat ?? 12.9855,
-    lng: defaultAddr?.lng ?? 77.6412,
+    lat: defaultAddr?.lat ?? lat,
+    lng: defaultAddr?.lng ?? lng,
   });
+
+  useEffect(() => {
+    setCityName(shortName);
+    if (defaultAddr) {
+      setSelectedAddressId(defaultAddr.id);
+      setShowNewAddressForm(false);
+    } else {
+      setSelectedAddressId('new');
+      setShowNewAddressForm(true);
+      setPinCoords({ lat, lng });
+    }
+  }, [shortName, lat, lng, defaultAddr]);
 
   const [customerName, setCustomerName] = useState(user?.name || '');
   const [customerPhone, setCustomerPhone] = useState(user?.phone || '');
+
+  useEffect(() => {
+    if (user?.name && !customerName) setCustomerName(user.name);
+    if (user?.phone && !customerPhone) setCustomerPhone(user.phone);
+  }, [user?.name, user?.phone]);
   const [selectedChips, setSelectedChips] = useState(['Contactless delivery']);
   const [customInstruction, setCustomInstruction] = useState('');
   const [paymentMethod, setPaymentMethod] = useState('razorpay');
@@ -160,14 +186,16 @@ export default function CheckoutPage() {
         flat: flatNo.trim(),
         street: street.trim(),
         landmark: landmark.trim(),
-        city: cityName.trim() || shortName || 'Bengaluru',
+        city: cityName.trim() || shortName,
         pincode: pincode.trim(),
         lat: pinCoords.lat,
         lng: pinCoords.lng,
       };
     }
     return (
-      savedAddresses.find((a) => a.id === selectedAddressId) || savedAddresses[0]
+      matchingAddresses.find((a) => a.id === selectedAddressId) ||
+      matchingAddresses[0] ||
+      null
     );
   }, [
     showNewAddressForm,
@@ -180,18 +208,65 @@ export default function CheckoutPage() {
     pincode,
     pinCoords,
     shortName,
-    savedAddresses,
+    matchingAddresses,
   ]);
 
-  const rLat = restaurant?.coordinates?.lat ?? 12.9716;
-  const rLon = restaurant?.coordinates?.lng ?? 77.5946;
-  const dLat = activeAddress?.lat ?? 12.9855;
-  const dLon = activeAddress?.lng ?? 77.6412;
-  const computedDistance = calculateHaversineKm(rLat, rLon, dLat, dLon) ?? 4.8;
+  const rLat = restaurant?.coordinates?.lat ?? null;
+  const rLon = restaurant?.coordinates?.lng ?? null;
+  const dLat = activeAddress?.lat ?? null;
+  const dLon = activeAddress?.lng ?? null;
+  const computedDistance = calculateHaversineKm(rLat, rLon, dLat, dLon);
   const coordsValid = areCoordinatesValid(rLat, rLon, dLat, dLon);
+  const isCityMismatch = Boolean(
+    restaurant?.city && !citiesMatch(restaurant.city, shortName)
+  );
+  const isAddressCityMismatch = Boolean(
+    activeAddress?.city && !citiesMatch(activeAddress.city, shortName)
+  );
+  const isDeliveryUnavailable = restaurant?.deliveryAvailable === false;
+  const isDistanceExceeded =
+    computedDistance !== null && computedDistance > MAX_DELIVERY_DISTANCE_KM;
+  const isCheckoutLocationBlocked =
+    isCityMismatch ||
+    isAddressCityMismatch ||
+    isDeliveryUnavailable ||
+    coordsValid !== 1 ||
+    isDistanceExceeded;
 
   const refreshLiveEta = useCallback(async () => {
     if (!restaurant || items.length === 0) return null;
+    if (isCityMismatch) {
+      setLiveEtaResult(null);
+      setEtaError(
+        `Cross-city selection blocked: ${restaurant.name} operates in ${restaurant.city}, not ${shortName}.`
+      );
+      return null;
+    }
+    if (isAddressCityMismatch) {
+      setLiveEtaResult(null);
+      setEtaError(
+        `Delivery address city (${activeAddress?.city}) does not match selected city (${shortName}).`
+      );
+      return null;
+    }
+    if (isDeliveryUnavailable) {
+      setLiveEtaResult(null);
+      setEtaError(`${restaurant.name} is currently unavailable for delivery.`);
+      return null;
+    }
+    if (coordsValid !== 1 || computedDistance === null) {
+      setLiveEtaResult(null);
+      setEtaError('Valid restaurant and delivery coordinates are required for ETA prediction.');
+      return null;
+    }
+    if (isDistanceExceeded) {
+      setLiveEtaResult(null);
+      setEtaError(
+        `Delivery distance is ${computedDistance} km (maximum ${MAX_DELIVERY_DISTANCE_KM} km within city).`
+      );
+      return null;
+    }
+
     setEtaLoading(true);
     setEtaError(null);
 
@@ -201,12 +276,18 @@ export default function CheckoutPage() {
 
     try {
       const mlResult = await predictETA({
+        restaurant_id: restaurant.id,
+        selected_city: shortName,
+        restaurant_lat: rLat,
+        restaurant_lon: rLon,
+        delivery_lat: dLat,
+        delivery_lon: dLon,
         Delivery_person_Age: 28,
         Delivery_person_Ratings: 4.7,
         Vehicle_condition: 2,
         multiple_deliveries: 0,
-        distance_km: computedDistance > 0 ? computedDistance : 4.5,
-        coordinates_valid: coordsValid,
+        distance_km: computedDistance,
+        coordinates_valid: 1,
         order_time_missing: 0,
         order_hour: now.getHours(),
         order_day: now.getDate(),
@@ -223,12 +304,30 @@ export default function CheckoutPage() {
       recordPrediction(mlResult);
       return mlResult;
     } catch (err) {
+      setLiveEtaResult(null);
       setEtaError(err.message || 'Unable to compute live AI ETA.');
       return null;
     } finally {
       setEtaLoading(false);
     }
-  }, [restaurant, items, computedDistance, coordsValid, modelCity, recordPrediction]);
+  }, [
+    restaurant,
+    items,
+    shortName,
+    activeAddress?.city,
+    rLat,
+    rLon,
+    dLat,
+    dLon,
+    computedDistance,
+    coordsValid,
+    isCityMismatch,
+    isAddressCityMismatch,
+    isDeliveryUnavailable,
+    isDistanceExceeded,
+    modelCity,
+    recordPrediction,
+  ]);
 
   useEffect(() => {
     refreshLiveEta();
@@ -296,6 +395,20 @@ export default function CheckoutPage() {
 
   const validate = () => {
     const errs = {};
+    if (isCityMismatch) {
+      errs.city = `Cross-city order blocked: ${restaurant?.name} is in ${restaurant?.city}, not ${shortName}.`;
+    }
+    if (isAddressCityMismatch) {
+      errs.address = `Delivery address city (${activeAddress?.city}) must match ${shortName}.`;
+    }
+    if (isDeliveryUnavailable) {
+      errs.city = `${restaurant?.name} is currently unavailable for delivery.`;
+    }
+    if (coordsValid !== 1) {
+      errs.address = 'Select valid delivery coordinates inside the service region.';
+    } else if (isDistanceExceeded) {
+      errs.address = `Delivery distance (${computedDistance} km) exceeds the ${MAX_DELIVERY_DISTANCE_KM} km within-city limit.`;
+    }
     if (!customerName.trim()) {
       errs.customerName = 'Customer name is required.';
     }
@@ -407,6 +520,14 @@ export default function CheckoutPage() {
     setPaymentError(null);
 
     const etaResult = liveEtaResult || (await refreshLiveEta());
+    if (!etaResult || typeof etaResult.predicted_eta_minutes !== 'number') {
+      setPaymentError(
+        etaError ||
+        'Unable to verify delivery ETA for your coordinates. Fix location/coordinates and retry.'
+      );
+      setSubmitting(false);
+      return;
+    }
     const orderCode = `MU-${Math.floor(100000 + Math.random() * 900000)}`;
     const selectedMethodObj = PAYMENT_OPTIONS.find((p) => p.id === paymentMethod);
 
@@ -433,7 +554,7 @@ export default function CheckoutPage() {
       if (!razorpayStatus.configured) {
         setPaymentError(
           razorpayStatus.reason ||
-            'Razorpay Test Mode is not configured on the backend. Please select Cash on Delivery (Demo).'
+          'Razorpay Test Mode is not configured on the backend. Please select Cash on Delivery (Demo).'
         );
         setSubmitting(false);
         return;
@@ -450,13 +571,20 @@ export default function CheckoutPage() {
         const rzpOrder = await createRazorpayOrder({
           order_code: orderCode,
           idempotency_key: idempotencyKeyRef.current,
+          restaurant_id: restaurant?.id || null,
           restaurant_name: restaurant?.name || 'Zomato Partner Kitchen',
+          selected_city: shortName,
+          delivery_city: activeAddress?.city || shortName,
           customer_name: customerName.trim(),
           customer_phone: customerPhone.trim(),
           delivery_address: formattedAddress,
+          restaurant_lat: rLat,
+          restaurant_lon: rLon,
+          delivery_lat: dLat,
+          delivery_lon: dLon,
           items,
           amount_inr: total,
-          predicted_eta_minutes: etaResult?.predicted_eta_minutes ?? null,
+          predicted_eta_minutes: etaResult.predicted_eta_minutes,
           payment_method: paymentMethod,
           payment_status: 'PENDING',
         });
@@ -512,7 +640,7 @@ export default function CheckoutPage() {
           idempotencyKeyRef.current = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
           setPaymentError(
             failureResp?.error?.description ||
-              'Razorpay test transaction failed. Your order was not marked paid.'
+            'Razorpay test transaction failed. Your order was not marked paid.'
           );
           setSubmitting(false);
         });
@@ -529,19 +657,34 @@ export default function CheckoutPage() {
 
     // Clearly labelled Demo Checkout / COD Demo path (never claims real Razorpay processing)
     const demoPaymentStatus = paymentMethod === 'cod' ? 'COD_DEMO' : 'DEMO';
-    await persistBackendOrder({
+    const persisted = await persistBackendOrder({
       order_code: orderCode,
       idempotency_key: idempotencyKeyRef.current,
+      restaurant_id: restaurant?.id || null,
       restaurant_name: restaurant?.name || 'Zomato Partner Kitchen',
+      selected_city: shortName,
+      delivery_city: activeAddress?.city || shortName,
       customer_name: customerName.trim(),
       customer_phone: customerPhone.trim(),
       delivery_address: formattedAddress,
+      restaurant_lat: rLat,
+      restaurant_lon: rLon,
+      delivery_lat: dLat,
+      delivery_lon: dLon,
       items,
       amount_inr: total,
-      predicted_eta_minutes: etaResult?.predicted_eta_minutes ?? null,
+      predicted_eta_minutes: etaResult.predicted_eta_minutes,
       payment_method: paymentMethod,
       payment_status: demoPaymentStatus,
     });
+
+    if (!persisted.persisted) {
+      setPaymentError(
+        persisted.error || 'Order validation failed on backend. Check city and address details.'
+      );
+      setSubmitting(false);
+      return;
+    }
 
     await finalizeOrder({
       orderCode,
@@ -607,12 +750,51 @@ export default function CheckoutPage() {
           {razorpayStatus.loading
             ? 'Checking Payment Gateway...'
             : razorpayStatus.isTestMode
-            ? 'Razorpay Test Mode'
-            : razorpayStatus.configured
-            ? 'Razorpay Configured'
-            : 'Academic Demo Checkout'}
+              ? 'Razorpay Test Mode'
+              : razorpayStatus.configured
+                ? 'Razorpay Configured'
+                : 'Academic Demo Checkout'}
         </span>
       </div>
+
+      {isCheckoutLocationBlocked && (
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+            <div>
+              <p className="font-bold">
+                Checkout Blocked — Location / City Validation Failed
+              </p>
+              <p className="mt-0.5 text-amber-800">
+                {formErrors.city ||
+                  etaError ||
+                  `Ensure your cart restaurant (${restaurant?.city || 'unknown'}) and delivery address (${activeAddress?.city || shortName}) match ${shortName} within ${MAX_DELIVERY_DISTANCE_KM} km.`}
+              </p>
+            </div>
+          </div>
+          {isCityMismatch && (
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => selectCityPreset(normalizeCitySlug(restaurant.city))}
+                className="rounded-xl bg-brand-primary px-3.5 py-2 font-bold text-white hover:bg-brand-primaryDark"
+              >
+                Switch to {restaurant.city}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  clearIncompatibleCart(shortName);
+                  clearCart();
+                }}
+                className="rounded-xl border border-amber-300 bg-white px-3.5 py-2 font-bold text-amber-900 hover:bg-amber-100"
+              >
+                Clear Cart
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <form
         onSubmit={handleCheckoutSubmit}
@@ -678,36 +860,37 @@ export default function CheckoutPage() {
                 </h2>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowNewAddressForm((v) => !v)}
-                className="inline-flex items-center gap-1 rounded-xl border border-brand-primaryBorder bg-brand-primarySoft px-3 py-1.5 text-xs font-bold text-brand-primaryDark hover:bg-brand-primary hover:text-white"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {showNewAddressForm ? 'Use Saved Address' : 'Add New Address'}
-              </button>
+              {matchingAddresses.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowNewAddressForm((v) => !v)}
+                  className="inline-flex items-center gap-1 rounded-xl border border-brand-primaryBorder bg-brand-primarySoft px-3 py-1.5 text-xs font-bold text-brand-primaryDark hover:bg-brand-primary hover:text-white"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {showNewAddressForm ? `Use ${shortName} Saved Address` : 'Add New Address'}
+                </button>
+              )}
             </div>
 
-            {!showNewAddressForm && savedAddresses.length > 0 ? (
+            {!showNewAddressForm && matchingAddresses.length > 0 ? (
               <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                {savedAddresses.map((addr) => {
+                {matchingAddresses.map((addr) => {
                   const selected = addr.id === selectedAddressId;
                   const Icon =
                     addr.label === 'Work'
                       ? Briefcase
                       : addr.label === 'Home'
-                      ? Home
-                      : MapPin;
+                        ? Home
+                        : MapPin;
                   return (
                     <button
                       key={addr.id}
                       type="button"
                       onClick={() => setSelectedAddressId(addr.id)}
-                      className={`flex flex-col justify-between rounded-xl border p-4 text-left transition-all ${
-                        selected
+                      className={`flex flex-col justify-between rounded-xl border p-4 text-left transition-all ${selected
                           ? 'border-brand-primary bg-brand-primarySoft/60 shadow-soft'
                           : 'border-neutral-200 bg-surface-soft hover:bg-white'
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center justify-between">
                         <span className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-black">
@@ -748,11 +931,10 @@ export default function CheckoutPage() {
                       key={lbl}
                       type="button"
                       onClick={() => setNewLabel(lbl)}
-                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${
-                        newLabel === lbl
+                      className={`rounded-full px-3.5 py-1.5 text-xs font-semibold ${newLabel === lbl
                           ? 'bg-brand-primary text-white'
                           : 'bg-surface-soft text-neutral-700'
-                      }`}
+                        }`}
                     >
                       {lbl}
                     </button>
@@ -849,11 +1031,10 @@ export default function CheckoutPage() {
                       key={chip}
                       type="button"
                       onClick={() => toggleChip(chip)}
-                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${
-                        active
+                      className={`rounded-full border px-3 py-1.5 text-xs font-medium transition-colors ${active
                           ? 'border-brand-primary bg-brand-primarySoft text-brand-primaryDark'
                           : 'border-neutral-200 bg-surface-soft text-neutral-700'
-                      }`}
+                        }`}
                     >
                       {chip}
                     </button>
@@ -932,13 +1113,12 @@ export default function CheckoutPage() {
               {PAYMENT_OPTIONS.map((opt) => (
                 <label
                   key={opt.id}
-                  className={`flex items-center justify-between gap-2.5 rounded-xl border p-3.5 text-xs font-semibold transition-colors ${
-                    opt.disabled
+                  className={`flex items-center justify-between gap-2.5 rounded-xl border p-3.5 text-xs font-semibold transition-colors ${opt.disabled
                       ? 'cursor-not-allowed border-neutral-200 bg-neutral-100 text-neutral-400 opacity-60'
                       : paymentMethod === opt.id
-                      ? 'cursor-pointer border-brand-primary bg-brand-primarySoft text-brand-black'
-                      : 'cursor-pointer border-neutral-200 bg-surface-soft text-neutral-700 hover:bg-surface-muted'
-                  }`}
+                        ? 'cursor-pointer border-brand-primary bg-brand-primarySoft text-brand-black'
+                        : 'cursor-pointer border-neutral-200 bg-surface-soft text-neutral-700 hover:bg-surface-muted'
+                    }`}
                 >
                   <span className="flex items-center gap-2.5">
                     <input
@@ -984,22 +1164,20 @@ export default function CheckoutPage() {
                   <button
                     type="button"
                     onClick={() => setTestUpiVpa('success@razorpay')}
-                    className={`rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-semibold ${
-                      testUpiVpa === 'success@razorpay'
+                    className={`rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-semibold ${testUpiVpa === 'success@razorpay'
                         ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
                         : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
-                    }`}
+                      }`}
                   >
                     success@razorpay
                   </button>
                   <button
                     type="button"
                     onClick={() => setTestUpiVpa('failure@razorpay')}
-                    className={`rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-semibold ${
-                      testUpiVpa === 'failure@razorpay'
+                    className={`rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-semibold ${testUpiVpa === 'failure@razorpay'
                         ? 'border-red-300 bg-red-50 text-red-800'
                         : 'border-neutral-200 bg-white text-neutral-700 hover:bg-neutral-50'
-                    }`}
+                      }`}
                   >
                     failure@razorpay
                   </button>
@@ -1041,11 +1219,11 @@ export default function CheckoutPage() {
             {etaLoading ? (
               <div className="mt-3 flex items-center gap-2 text-sm text-neutral-600">
                 <Loader2 className="h-4 w-4 animate-spin text-brand-primary" />
-                Calculating delivery time for {computedDistance} km route...
+                Calculating delivery time for {computedDistance ?? '...'} km route...
               </div>
             ) : etaError ? (
-              <p className="mt-2 text-xs text-red-700">
-                Live AI prediction unavailable ({etaError}). Using kitchen estimate (~{restaurant?.etaMinutes || 25} min).
+              <p className="mt-2 text-xs font-semibold text-red-700">
+                {etaError}
               </p>
             ) : etaVal !== null ? (
               <div className="mt-2">
@@ -1057,9 +1235,8 @@ export default function CheckoutPage() {
                 </p>
               </div>
             ) : (
-              <p className="mt-2 flex items-center gap-1.5 text-sm font-bold text-brand-black">
-                <Clock className="h-4 w-4 text-brand-primary" />
-                ~{restaurant?.etaMinutes || 25} min
+              <p className="mt-2 text-xs text-neutral-500">
+                Click Refresh to calculate live AI ETA for {shortName}.
               </p>
             )}
           </div>
@@ -1132,6 +1309,7 @@ export default function CheckoutPage() {
               type="submit"
               disabled={
                 submitting ||
+                isCheckoutLocationBlocked ||
                 (PAYMENT_OPTIONS.find((p) => p.id === paymentMethod)?.online &&
                   !razorpayStatus.loading &&
                   !razorpayStatus.configured)

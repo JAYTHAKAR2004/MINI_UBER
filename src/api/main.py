@@ -29,13 +29,36 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 
-from src.resilience.circuit_breaker import CircuitBreaker
+from src.resilience import (
+    CircuitBreaker,
+    CircuitState,
+    RetryConfig,
+    RetryExhaustedError,
+    TimeoutConfig,
+    configure_logging,
+    execute_with_retry,
+    get_logger,
+    run_with_timeout,
+)
 
 from src.database import SessionLocal
 
-from src.models.db_models import ETAPrediction
+from src.models.db_models import CustomerOrder, ETAPrediction, Restaurant
 
-from src.messaging.kafka_producer import publish_eta_event
+from src.messaging.kafka_producer import (
+    get_kafka_resilience_status,
+    publish_eta_event,
+)
+from src.restaurants.catalog import (
+    MAX_DELIVERY_DISTANCE_KM,
+    SUPPORTED_CITIES,
+    are_india_coordinates_valid,
+    calculate_haversine_km,
+    detect_city_in_text,
+    normalize_city_name,
+    normalize_city_slug,
+    seed_restaurants,
+)
 
 # Project paths
 
@@ -44,6 +67,12 @@ ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = ROOT / "models" / "eta_model.joblib"
 
 INSTANCE_ID = os.getenv("HOSTNAME", socket.gethostname())
+
+# Logging and timeout configuration
+
+configure_logging()
+logger = get_logger("api.main")
+timeout_cfg = TimeoutConfig.from_env()
 
 # Redis configuration
 
@@ -54,27 +83,39 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 CACHE_TTL = 300
 
 redis_client = redis.Redis(
-
-          host=REDIS_HOST,
-
-          port=REDIS_PORT,
-
-          decode_responses=True,
-
-          socket_connect_timeout=1,
-
-          socket_timeout=1,
-
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    decode_responses=True,
+    socket_connect_timeout=timeout_cfg.redis_connect_timeout,
+    socket_timeout=timeout_cfg.redis_socket_timeout,
 )
 
-# Redis Circuit Breaker
+# Redis Retry & Circuit Breaker configuration
+
+REDIS_RETRY_CONFIG = RetryConfig(
+    max_attempts=max(1, int(os.getenv("REDIS_RETRY_MAX_ATTEMPTS", "3"))),
+    initial_backoff_seconds=max(0.0, float(os.getenv("REDIS_RETRY_INITIAL_BACKOFF", "1.0"))),
+    backoff_multiplier=2.0,
+    retryable_exceptions=(
+        redis.ConnectionError,
+        redis.TimeoutError,
+        redis.BusyLoadingError,
+        TimeoutError,
+    ),
+    non_retryable_exceptions=(
+        redis.AuthenticationError,
+        redis.ResponseError,
+        redis.DataError,
+        ValueError,
+        TypeError,
+    ),
+)
 
 redis_circuit_breaker = CircuitBreaker(
-
-          failure_threshold=3,
-
-          recovery_timeout=5,
-
+    failure_threshold=max(1, int(os.getenv("REDIS_CIRCUIT_FAILURE_THRESHOLD", "3"))),
+    recovery_timeout=max(0.1, float(os.getenv("REDIS_CIRCUIT_RECOVERY_TIMEOUT", "5"))),
+    half_open_max_requests=max(1, int(os.getenv("REDIS_CIRCUIT_HALF_OPEN_REQUESTS", "1"))),
+    name="redis_cache",
 )
 
 # Feature order must match the training pipeline.
@@ -183,6 +224,14 @@ class ETAPredictionRequest(BaseModel):
 
           City: Optional[str] = None
 
+          # Optional location/restaurant validation metadata (not passed into ML model)
+          restaurant_id: Optional[str] = None
+          selected_city: Optional[str] = None
+          restaurant_lat: Optional[float] = None
+          restaurant_lon: Optional[float] = None
+          delivery_lat: Optional[float] = None
+          delivery_lon: Optional[float] = None
+
 def generate_cache_key(input_data):
 
           """Generate a deterministic cache key from prediction inputs."""
@@ -205,67 +254,91 @@ def generate_cache_key(input_data):
 
           return f"eta:rf-v1:{input_hash}"
 
-# Redis Circuit Breaker helper functions
+# Redis Circuit Breaker + Retry + Timeout helper functions
+
+
+def _effective_redis_retry_config() -> RetryConfig:
+    if redis_circuit_breaker.state == CircuitState.HALF_OPEN:
+        return RetryConfig(
+            max_attempts=1,
+            initial_backoff_seconds=0.0,
+            backoff_multiplier=2.0,
+            retryable_exceptions=REDIS_RETRY_CONFIG.retryable_exceptions,
+            non_retryable_exceptions=REDIS_RETRY_CONFIG.non_retryable_exceptions,
+        )
+    return REDIS_RETRY_CONFIG
+
+
+def _redis_operation_timeout() -> float:
+    return max(timeout_cfg.redis_connect_timeout, timeout_cfg.redis_socket_timeout) + 0.5
+
 
 def get_from_cache(cache_key):
+    """Read Redis cache through the circuit breaker with retry and timeout handling."""
+    if not redis_circuit_breaker.allow_request():
+        logger.warning(
+            "Fallback: Redis circuit OPEN — bypassing cache lookup for key %s",
+            cache_key[:24],
+        )
+        return None, "BYPASS"
 
-          """Read Redis cache through the circuit breaker."""
+    op_timeout = _redis_operation_timeout()
+    try:
+        cached_value = execute_with_retry(
+            lambda key: run_with_timeout(
+                redis_client.get,
+                op_timeout,
+                key,
+                operation_name="redis_socket_get",
+            ),
+            cache_key,
+            config=_effective_redis_retry_config(),
+            operation_name="redis_cache_get",
+            idempotency_key=cache_key,
+        )
+        redis_circuit_breaker.record_success()
+        if cached_value is not None:
+            return cached_value, "HIT"
+        return None, "MISS"
+    except (RetryExhaustedError, redis.RedisError, TimeoutError) as exc:
+        redis_circuit_breaker.record_failure()
+        logger.error("Redis read failed (%s) — falling back to ML prediction", exc)
+        return None, "BYPASS"
 
-          if not redis_circuit_breaker.allow_request():
-
-                    return None, "BYPASS"
-
-          try:
-
-                    cached_value = redis_client.get(cache_key)
-
-                    redis_circuit_breaker.record_success()
-
-                    if cached_value is not None:
-
-                              return cached_value, "HIT"
-
-                    return None, "MISS"
-
-          except redis.RedisError as exc:
-
-                    redis_circuit_breaker.record_failure()
-
-                    print(f"Redis read failed: {exc}")
-
-                    return None, "BYPASS"
 
 def save_to_cache(cache_key, predicted_eta):
+    """Write prediction to Redis through the circuit breaker with retry and timeout handling."""
+    if not redis_circuit_breaker.allow_request():
+        logger.warning(
+            "Fallback: Redis circuit OPEN — skipping cache write for key %s",
+            cache_key[:24],
+        )
+        return False
 
-          """Write prediction to Redis through the circuit breaker."""
-
-          if not redis_circuit_breaker.allow_request():
-
-                    return False
-
-          try:
-
-                    redis_client.setex(
-
-                              cache_key,
-
-                              CACHE_TTL,
-
-                              str(predicted_eta),
-
-                    )
-
-                    redis_circuit_breaker.record_success()
-
-                    return True
-
-          except redis.RedisError as exc:
-
-                    redis_circuit_breaker.record_failure()
-
-                    print(f"Redis write failed: {exc}")
-
-                    return False
+    op_timeout = _redis_operation_timeout()
+    try:
+        execute_with_retry(
+            lambda key, ttl, val: run_with_timeout(
+                redis_client.setex,
+                op_timeout,
+                key,
+                ttl,
+                val,
+                operation_name="redis_socket_setex",
+            ),
+            cache_key,
+            CACHE_TTL,
+            str(predicted_eta),
+            config=_effective_redis_retry_config(),
+            operation_name="redis_cache_setex",
+            idempotency_key=cache_key,
+        )
+        redis_circuit_breaker.record_success()
+        return True
+    except (RetryExhaustedError, redis.RedisError, TimeoutError) as exc:
+        redis_circuit_breaker.record_failure()
+        logger.error("Redis write failed (%s) — continuing without cache persistence", exc)
+        return False
 
 @app.get("/")
 
@@ -301,6 +374,28 @@ def health():
 
           }
 
+
+@app.get("/resilience/status")
+def resilience_status():
+    """Expose fault-tolerance configuration and live circuit/retry telemetry."""
+    return {
+        "instance": INSTANCE_ID,
+        "redis_circuit_breaker": redis_circuit_breaker.get_status(),
+        "redis_retry_config": {
+            "max_attempts": REDIS_RETRY_CONFIG.max_attempts,
+            "initial_backoff_seconds": REDIS_RETRY_CONFIG.initial_backoff_seconds,
+            "backoff_multiplier": REDIS_RETRY_CONFIG.backoff_multiplier,
+        },
+        "timeouts": {
+            "redis_connect_timeout_seconds": timeout_cfg.redis_connect_timeout,
+            "redis_socket_timeout_seconds": timeout_cfg.redis_socket_timeout,
+            "kafka_delivery_timeout_ms": timeout_cfg.kafka_delivery_timeout_ms,
+            "kafka_flush_timeout_seconds": timeout_cfg.kafka_flush_timeout,
+            "http_client_timeout_seconds": timeout_cfg.http_client_timeout,
+        },
+        "kafka_producer": get_kafka_resilience_status(),
+    }
+
 @app.post("/predict")
 
 def predict_eta(request: ETAPredictionRequest):
@@ -308,16 +403,8 @@ def predict_eta(request: ETAPredictionRequest):
           request_start = time.perf_counter()
 
           def log_stage(message):
-
                     elapsed = time.perf_counter() - request_start
-
-                    print(
-
-                              f"[PREDICT DEBUG] +{elapsed:.3f}s | {message}",
-
-                              flush=True
-
-                    )
+                    logger.info("[PREDICT] +%.3fs | %s", elapsed, message)
 
           log_stage("Request received")
 
@@ -331,7 +418,87 @@ def predict_eta(request: ETAPredictionRequest):
 
                     )
 
-          input_data = request.model_dump()
+          raw_input = request.model_dump()
+          restaurant_id = raw_input.pop("restaurant_id", None)
+          selected_city = raw_input.pop("selected_city", None)
+          req_r_lat = raw_input.pop("restaurant_lat", None)
+          req_r_lon = raw_input.pop("restaurant_lon", None)
+          req_d_lat = raw_input.pop("delivery_lat", None)
+          req_d_lon = raw_input.pop("delivery_lon", None)
+
+          if raw_input.get("coordinates_valid") == 0:
+                    raise HTTPException(
+                              status_code=422,
+                              detail="Invalid or out-of-bounds coordinates. Provide valid India coordinates for ETA prediction.",
+                    )
+
+          # Enforce restaurant & coordinate integrity when restaurant or coordinates are provided
+          has_coord_inputs = any(
+                    v is not None
+                    for v in (restaurant_id, req_r_lat, req_r_lon, req_d_lat, req_d_lon)
+          )
+          if has_coord_inputs:
+                    r_lat = req_r_lat
+                    r_lon = req_r_lon
+                    if restaurant_id:
+                              db_check = SessionLocal()
+                              try:
+                                        ensure_restaurants_seeded(db_check)
+                                        rest = (
+                                                  db_check.query(Restaurant)
+                                                  .filter(Restaurant.restaurant_key == restaurant_id)
+                                                  .first()
+                                        )
+                                        if rest is None:
+                                                  rest = (
+                                                            db_check.query(Restaurant)
+                                                            .filter(Restaurant.slug == restaurant_id)
+                                                            .first()
+                                                  )
+                                        if rest is None:
+                                                  raise HTTPException(
+                                                            status_code=404,
+                                                            detail=f"Restaurant '{restaurant_id}' not found.",
+                                                  )
+                                        if selected_city and normalize_city_slug(selected_city) != rest.city_normalized:
+                                                  raise HTTPException(
+                                                            status_code=400,
+                                                            detail=(
+                                                                      f"Cross-city ETA prediction rejected: '{rest.name}' operates in "
+                                                                      f"{rest.city}, not {normalize_city_name(selected_city) or selected_city}."
+                                                            ),
+                                                  )
+                                        if not rest.delivery_available:
+                                                  raise HTTPException(
+                                                            status_code=400,
+                                                            detail=f"Delivery is currently unavailable for '{rest.name}'.",
+                                                  )
+                                        r_lat = rest.latitude
+                                        r_lon = rest.longitude
+                                        if not raw_input.get("City"):
+                                                  raw_input["City"] = rest.model_city
+                              finally:
+                                        db_check.close()
+
+                    if not are_india_coordinates_valid(r_lat, r_lon) or not are_india_coordinates_valid(req_d_lat, req_d_lon):
+                              raise HTTPException(
+                                        status_code=422,
+                                        detail="Valid restaurant and delivery coordinates within India bounds are required for ETA prediction.",
+                              )
+
+                    computed_distance = calculate_haversine_km(r_lat, r_lon, req_d_lat, req_d_lon)
+                    if computed_distance > MAX_DELIVERY_DISTANCE_KM:
+                              raise HTTPException(
+                                        status_code=422,
+                                        detail=(
+                                                  f"Delivery location is {computed_distance:.2f} km from the restaurant "
+                                                  f"(maximum {MAX_DELIVERY_DISTANCE_KM:.0f} km within city). Cross-city delivery is not supported."
+                                        ),
+                              )
+                    raw_input["distance_km"] = computed_distance
+                    raw_input["coordinates_valid"] = 1
+
+          input_data = {k: raw_input[k] for k in FEATURES}
 
           if all(value is None for value in input_data.values()):
 
@@ -725,18 +892,219 @@ def ensure_orders_table():
                 "CREATE INDEX IF NOT EXISTS ix_customer_orders_youpi_payment_id ON customer_orders (youpi_payment_id)",
                 "CREATE INDEX IF NOT EXISTS ix_customer_orders_utr ON customer_orders (utr)",
                 "CREATE UNIQUE INDEX IF NOT EXISTS ix_customer_orders_webhook_event_id ON customer_orders (webhook_event_id)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS restaurant_id VARCHAR(64)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS city VARCHAR(80)",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS restaurant_lat DOUBLE PRECISION",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS restaurant_lon DOUBLE PRECISION",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS delivery_lat DOUBLE PRECISION",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS delivery_lon DOUBLE PRECISION",
+                "ALTER TABLE customer_orders ADD COLUMN IF NOT EXISTS distance_km DOUBLE PRECISION",
+                "CREATE INDEX IF NOT EXISTS ix_customer_orders_restaurant_id ON customer_orders (restaurant_id)",
+                "CREATE INDEX IF NOT EXISTS ix_customer_orders_city ON customer_orders (city)",
             ]
             for stmt in additive_statements:
                 connection.exec_driver_sql(stmt)
 
 
+def ensure_restaurants_seeded(db):
+    """Ensure the 12-city demo restaurant catalog is populated without duplicates."""
+    if db.query(Restaurant.id).first() is None:
+        seed_restaurants(db)
+
+
+def restaurant_to_dict(record: Restaurant, distance_km: Optional[float] = None) -> dict:
+    prep = int(record.avg_prep_time_minutes or 22)
+    eta_minutes = prep
+    if distance_km is not None:
+        eta_minutes = max(12, min(75, int(round(prep * 0.6 + distance_km * 2.4))))
+    return {
+        "id": record.restaurant_key,
+        "slug": record.slug,
+        "name": record.name,
+        "city": record.city,
+        "city_normalized": record.city_normalized,
+        "modelCity": record.model_city,
+        "area": record.area,
+        "address": record.address,
+        "coordinates": {"lat": record.latitude, "lng": record.longitude},
+        "cuisine": record.cuisine,
+        "categories": record.categories or [],
+        "rating": record.rating,
+        "reviewCount": record.review_count,
+        "deliveryAvailable": bool(record.delivery_available),
+        "avgPrepTimeMinutes": prep,
+        "etaMinutes": eta_minutes,
+        "etaRange": f"{max(10, eta_minutes - 4)}–{eta_minutes + 4} min",
+        "deliveryFee": record.delivery_fee,
+        "costForTwo": record.cost_for_two,
+        "isPureVeg": bool(record.is_pure_veg),
+        "diningOut": bool(record.dining_out),
+        "offer": record.offer,
+        "openHours": record.open_hours,
+        "image": record.image,
+        "heroImage": record.hero_image,
+        "gallery": record.gallery or [record.image],
+        "menu": record.menu or [],
+        "isDemo": bool(record.is_demo),
+        "distanceKm": distance_km,
+    }
+
+
 @app.on_event("startup")
 def initialize_database():
-    """Initialize database tables when each API instance starts."""
+    """Initialize database tables and idempotently seed supported city restaurants."""
     try:
         ensure_orders_table()
+        db = SessionLocal()
+        try:
+            seed_restaurants(db)
+        finally:
+            db.close()
     except SQLAlchemyError as exc:
         print(f"Database startup initialization skipped: {exc}")
+
+
+@app.get("/cities")
+def list_supported_cities():
+    """Return supported delivery cities with normalized metadata and active restaurant counts."""
+    db = SessionLocal()
+    try:
+        ensure_restaurants_seeded(db)
+        rows = (
+            db.query(Restaurant.city_normalized, func.count(Restaurant.id))
+            .group_by(Restaurant.city_normalized)
+            .all()
+        )
+        counts = {slug: int(cnt) for slug, cnt in rows}
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error listing cities: {exc}")
+    finally:
+        db.close()
+
+    return {
+        "cities": [
+            {
+                "id": c["id"],
+                "name": c["name"],
+                "modelCity": c["model_city"],
+                "defaultAddress": c["default_address"],
+                "restaurantLat": c["restaurant_lat"],
+                "restaurantLon": c["restaurant_lon"],
+                "deliveryLat": c["delivery_lat"],
+                "deliveryLon": c["delivery_lon"],
+                "restaurantCount": counts.get(c["id"], 0),
+            }
+            for c in SUPPORTED_CITIES
+        ]
+    }
+
+
+@app.get("/restaurants")
+def list_restaurants(
+    city: Optional[str] = None,
+    search: Optional[str] = None,
+    category: Optional[str] = None,
+    pure_veg: Optional[bool] = None,
+    delivery_only: Optional[bool] = None,
+    dining_only: Optional[bool] = None,
+    lat: Optional[float] = None,
+    lng: Optional[float] = None,
+    max_distance_km: Optional[float] = None,
+    sort: str = "relevance",
+):
+    """Fetch restaurants strictly filtered by normalized city (never falls back across cities)."""
+    normalized_slug = normalize_city_slug(city) if city and city.strip() else None
+    normalized_display = normalize_city_name(city) if city and city.strip() else None
+    has_user_coords = lat is not None and lng is not None and are_india_coordinates_valid(lat, lng)
+
+    db = SessionLocal()
+    try:
+        ensure_restaurants_seeded(db)
+        query = db.query(Restaurant)
+        if normalized_slug:
+            query = query.filter(Restaurant.city_normalized == normalized_slug)
+        if pure_veg is True:
+            query = query.filter(Restaurant.is_pure_veg.is_(True))
+        if delivery_only is True:
+            query = query.filter(Restaurant.delivery_available.is_(True))
+        if dining_only is True:
+            query = query.filter(Restaurant.dining_out.is_(True))
+
+        records = query.order_by(Restaurant.id.asc()).all()
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error fetching restaurants: {exc}")
+    finally:
+        db.close()
+
+    results = []
+    search_q = (search or "").strip().lower()
+    cat_q = (category or "").strip().lower()
+
+    for rec in records:
+        if cat_q and cat_q != "all":
+            cats_lower = [str(c).lower() for c in (rec.categories or [])]
+            if cat_q not in cats_lower and cat_q not in (rec.cuisine or "").lower():
+                continue
+
+        if search_q:
+            meta_blob = f"{rec.name} {rec.cuisine} {rec.area} {rec.city}".lower()
+            menu_hit = any(search_q in str(item.get("name", "")).lower() for item in (rec.menu or []))
+            if search_q not in meta_blob and not menu_hit:
+                continue
+
+        dist_km = (
+            calculate_haversine_km(rec.latitude, rec.longitude, lat, lng)
+            if has_user_coords
+            else None
+        )
+        if max_distance_km is not None and dist_km is not None and dist_km > max_distance_km:
+            continue
+        results.append(restaurant_to_dict(rec, distance_km=dist_km))
+
+    if sort == "rating":
+        results.sort(key=lambda r: r["rating"], reverse=True)
+    elif sort == "eta":
+        results.sort(key=lambda r: r["etaMinutes"])
+    elif sort == "costLow":
+        results.sort(key=lambda r: r["costForTwo"])
+    elif sort == "costHigh":
+        results.sort(key=lambda r: r["costForTwo"], reverse=True)
+    elif sort == "distance" and has_user_coords:
+        results.sort(key=lambda r: r["distanceKm"] if r["distanceKm"] is not None else 9999.0)
+
+    return {
+        "city": normalized_display,
+        "normalized_city": normalized_slug,
+        "count": len(results),
+        "restaurants": results,
+    }
+
+
+@app.get("/restaurants/{identifier}")
+def get_restaurant_detail(identifier: str, lat: Optional[float] = None, lng: Optional[float] = None):
+    """Fetch a single restaurant by slug or restaurant_key."""
+    db = SessionLocal()
+    try:
+        ensure_restaurants_seeded(db)
+        rec = (
+            db.query(Restaurant)
+            .filter((Restaurant.slug == identifier) | (Restaurant.restaurant_key == identifier))
+            .first()
+        )
+        if not rec:
+            raise HTTPException(status_code=404, detail=f"Restaurant '{identifier}' not found.")
+        dist_km = (
+            calculate_haversine_km(rec.latitude, rec.longitude, lat, lng)
+            if lat is not None and lng is not None and are_india_coordinates_valid(lat, lng)
+            else None
+        )
+        return {"restaurant": restaurant_to_dict(rec, distance_km=dist_km)}
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(status_code=503, detail=f"Database error fetching restaurant: {exc}")
+    finally:
+        db.close()
 
 
 
@@ -749,15 +1117,139 @@ def get_razorpay_credentials():
 class CustomerOrderCreateRequest(BaseModel):
     order_code: str = Field(min_length=3, max_length=64)
     idempotency_key: Optional[str] = Field(default=None, max_length=128)
+    restaurant_id: Optional[str] = Field(default=None, max_length=64)
     restaurant_name: str = Field(min_length=1, max_length=200)
+    selected_city: Optional[str] = Field(default=None, max_length=80)
+    delivery_city: Optional[str] = Field(default=None, max_length=80)
     customer_name: str = Field(min_length=1, max_length=150)
     customer_phone: str = Field(min_length=5, max_length=40)
     delivery_address: str = Field(min_length=3, max_length=500)
+    restaurant_lat: Optional[float] = None
+    restaurant_lon: Optional[float] = None
+    delivery_lat: Optional[float] = None
+    delivery_lon: Optional[float] = None
     items: list = Field(min_length=1)
     amount_inr: float = Field(gt=0)
     predicted_eta_minutes: Optional[float] = Field(default=None, ge=0)
     payment_method: str = Field(min_length=1, max_length=64)
     payment_status: Optional[str] = Field(default="DEMO", max_length=32)
+
+
+def validate_order_location_and_restaurant(db, payload: CustomerOrderCreateRequest) -> dict:
+    """Enforce restaurant existence, same-city rules, availability, and coordinate validity."""
+    if payload.restaurant_id or payload.selected_city:
+        ensure_restaurants_seeded(db)
+    rest = None
+    if payload.restaurant_id:
+        rest = (
+            db.query(Restaurant)
+            .filter(
+                (Restaurant.restaurant_key == payload.restaurant_id)
+                | (Restaurant.slug == payload.restaurant_id)
+            )
+            .first()
+        )
+        if rest is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Selected restaurant '{payload.restaurant_id}' does not exist.",
+            )
+    elif payload.selected_city or payload.restaurant_name:
+        rest = (
+            db.query(Restaurant)
+            .filter(func.lower(Restaurant.name) == payload.restaurant_name.strip().lower())
+            .first()
+        )
+
+    if rest is not None and not rest.delivery_available:
+        raise HTTPException(
+            status_code=400,
+            detail=f"'{rest.name}' is currently not available for delivery.",
+        )
+
+    selected_slug = normalize_city_slug(payload.selected_city) if payload.selected_city else ""
+    selected_name = normalize_city_name(payload.selected_city) if payload.selected_city else None
+
+    if payload.selected_city:
+        if rest is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Restaurant '{payload.restaurant_name}' was not found for city {selected_name}.",
+            )
+        if rest.city_normalized != selected_slug:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cross-city order rejected: '{rest.name}' delivers in {rest.city}, "
+                    f"not {selected_name}."
+                ),
+            )
+        if payload.delivery_city and normalize_city_slug(payload.delivery_city) != selected_slug:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cross-city order rejected: delivery city '{payload.delivery_city}' does not match "
+                    f"selected city {selected_name}."
+                ),
+            )
+        addr_city = detect_city_in_text(payload.delivery_address)
+        if addr_city and normalize_city_slug(addr_city) != selected_slug:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cross-city order rejected: delivery address belongs to {addr_city}, "
+                    f"but order city is {selected_name}."
+                ),
+            )
+    elif rest is not None:
+        addr_city = detect_city_in_text(payload.delivery_address)
+        if addr_city and normalize_city_slug(addr_city) != rest.city_normalized:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cross-city order rejected: '{rest.name}' operates in {rest.city}, "
+                    f"not {addr_city}."
+                ),
+            )
+
+    r_lat = rest.latitude if rest is not None else payload.restaurant_lat
+    r_lon = rest.longitude if rest is not None else payload.restaurant_lon
+    d_lat = payload.delivery_lat
+    d_lon = payload.delivery_lon
+    distance_km = None
+
+    strict_coords_required = bool(
+        payload.restaurant_id
+        or payload.selected_city
+        or payload.delivery_lat is not None
+        or payload.delivery_lon is not None
+    )
+    if strict_coords_required:
+        if not are_india_coordinates_valid(r_lat, r_lon) or not are_india_coordinates_valid(d_lat, d_lon):
+            raise HTTPException(
+                status_code=422,
+                detail="Valid restaurant and delivery coordinates are required before placing an order.",
+            )
+        distance_km = calculate_haversine_km(r_lat, r_lon, d_lat, d_lon)
+        if distance_km > MAX_DELIVERY_DISTANCE_KM:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Cross-city / out-of-range order rejected: delivery distance is {distance_km:.2f} km "
+                    f"(maximum {MAX_DELIVERY_DISTANCE_KM:.0f} km)."
+                ),
+            )
+
+    return {
+        "restaurant_id": rest.restaurant_key if rest is not None else payload.restaurant_id,
+        "restaurant_name": rest.name if rest is not None else payload.restaurant_name,
+        "city": rest.city if rest is not None else selected_name,
+        "restaurant_lat": r_lat,
+        "restaurant_lon": r_lon,
+        "delivery_lat": d_lat,
+        "delivery_lon": d_lon,
+        "distance_km": distance_km,
+    }
 
 
 class RazorpayVerifyRequest(BaseModel):
@@ -772,10 +1264,17 @@ def customer_order_to_dict(record: CustomerOrder) -> dict:
         "id": record.id,
         "order_code": record.order_code,
         "idempotency_key": record.idempotency_key,
+        "restaurant_id": record.restaurant_id,
         "restaurant_name": record.restaurant_name,
+        "city": record.city,
         "customer_name": record.customer_name,
         "customer_phone": record.customer_phone,
         "delivery_address": record.delivery_address,
+        "restaurant_lat": record.restaurant_lat,
+        "restaurant_lon": record.restaurant_lon,
+        "delivery_lat": record.delivery_lat,
+        "delivery_lon": record.delivery_lon,
+        "distance_km": record.distance_km,
         "items": record.items,
         "amount_inr": record.amount_inr,
         "predicted_eta_minutes": record.predicted_eta_minutes,
@@ -844,10 +1343,15 @@ def create_razorpay_order(payload: CustomerOrderCreateRequest):
                     "mode": "test",
                 }
 
+        validated_loc = validate_order_location_and_restaurant(db, payload)
+
         amount_paise = int(round(payload.amount_inr * 100))
         if amount_paise < 100:
             raise HTTPException(status_code=422, detail="Minimum Razorpay order amount is ₹1.00 (100 paise).")
 
+        razorpay_timeout = float(
+            os.getenv("RAZORPAY_HTTP_TIMEOUT", str(timeout_cfg.http_client_timeout))
+        )
         response = httpx.post(
             "https://api.razorpay.com/v1/orders",
             auth=(key_id, key_secret),
@@ -857,10 +1361,10 @@ def create_razorpay_order(payload: CustomerOrderCreateRequest):
                 "receipt": payload.order_code[:40],
                 "notes": {
                     "project": "Mini-Uber-ETA",
-                    "restaurant": payload.restaurant_name[:80],
+                    "restaurant": validated_loc["restaurant_name"][:80],
                 },
             },
-            timeout=10.0,
+            timeout=razorpay_timeout,
         )
 
         if response.status_code >= 400:
@@ -877,10 +1381,17 @@ def create_razorpay_order(payload: CustomerOrderCreateRequest):
         record = CustomerOrder(
             order_code=payload.order_code,
             idempotency_key=payload.idempotency_key,
-            restaurant_name=payload.restaurant_name,
+            restaurant_id=validated_loc["restaurant_id"],
+            restaurant_name=validated_loc["restaurant_name"],
+            city=validated_loc["city"],
             customer_name=payload.customer_name,
             customer_phone=payload.customer_phone,
             delivery_address=payload.delivery_address,
+            restaurant_lat=validated_loc["restaurant_lat"],
+            restaurant_lon=validated_loc["restaurant_lon"],
+            delivery_lat=validated_loc["delivery_lat"],
+            delivery_lon=validated_loc["delivery_lon"],
+            distance_km=validated_loc["distance_km"],
             items=payload.items,
             amount_inr=payload.amount_inr,
             predicted_eta_minutes=payload.predicted_eta_minutes,
@@ -903,6 +1414,10 @@ def create_razorpay_order(payload: CustomerOrderCreateRequest):
     except HTTPException:
         db.rollback()
         raise
+    except httpx.TimeoutException as exc:
+        db.rollback()
+        logger.error("Razorpay HTTP client timed out: %s", exc)
+        raise HTTPException(status_code=504, detail=f"Razorpay API request timed out: {exc}")
     except httpx.HTTPError as exc:
         db.rollback()
         raise HTTPException(status_code=502, detail=f"Unable to reach Razorpay API: {exc}")
@@ -1004,13 +1519,22 @@ def create_customer_order(payload: CustomerOrderCreateRequest):
                     "order": customer_order_to_dict(existing),
                 }
 
+        validated_loc = validate_order_location_and_restaurant(db, payload)
+
         record = CustomerOrder(
             order_code=payload.order_code,
             idempotency_key=payload.idempotency_key,
-            restaurant_name=payload.restaurant_name,
+            restaurant_id=validated_loc["restaurant_id"],
+            restaurant_name=validated_loc["restaurant_name"],
+            city=validated_loc["city"],
             customer_name=payload.customer_name,
             customer_phone=payload.customer_phone,
             delivery_address=payload.delivery_address,
+            restaurant_lat=validated_loc["restaurant_lat"],
+            restaurant_lon=validated_loc["restaurant_lon"],
+            delivery_lat=validated_loc["delivery_lat"],
+            delivery_lon=validated_loc["delivery_lon"],
+            distance_km=validated_loc["distance_km"],
             items=payload.items,
             amount_inr=payload.amount_inr,
             predicted_eta_minutes=payload.predicted_eta_minutes,

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { PROMO_OFFERS } from '../data/restaurants';
+import { citiesMatch } from '../utils/haversine';
 
 const STORAGE_KEY = 'mini_uber_cart_v1';
 const CartContext = createContext(null);
@@ -48,12 +49,10 @@ export function CartProvider({ children }) {
             name: restaurantInfo.name,
             deliveryFee: restaurantInfo.deliveryFee ?? 29,
             etaMinutes: restaurantInfo.etaMinutes ?? 25,
-            city: restaurantInfo.city || 'Bengaluru',
+            city: restaurantInfo.city || '',
             modelCity: restaurantInfo.modelCity || 'Metropolitian',
-            coordinates: restaurantInfo.coordinates || {
-              lat: 12.9716,
-              lng: 77.5946,
-            },
+            deliveryAvailable: restaurantInfo.deliveryAvailable !== false,
+            coordinates: restaurantInfo.coordinates || null,
             address: restaurantInfo.address || '',
             image: restaurantInfo.image || '',
           }
@@ -127,6 +126,23 @@ export function CartProvider({ children }) {
   const clearCart = useCallback(() => {
     setCart({ restaurant: null, items: [], appliedPromoCode: null });
   }, []);
+
+  const clearIncompatibleCart = useCallback(
+    (nextCity) => {
+      if (
+        cart.items.length > 0 &&
+        cart.restaurant?.city &&
+        nextCity &&
+        !citiesMatch(cart.restaurant.city, nextCity)
+      ) {
+        const previousRestaurant = cart.restaurant;
+        setCart({ restaurant: null, items: [], appliedPromoCode: null });
+        return previousRestaurant;
+      }
+      return null;
+    },
+    [cart.items.length, cart.restaurant]
+  );
 
   const applyPromo = useCallback((rawCode) => {
     const code = String(rawCode || '').trim().toUpperCase();
@@ -206,6 +222,7 @@ export function CartProvider({ children }) {
         updateQuantity,
         removeItem,
         clearCart,
+        clearIncompatibleCart,
         applyPromo,
         removePromo,
         isDrawerOpen,

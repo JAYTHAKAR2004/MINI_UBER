@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowRight,
   Clock,
   Minus,
@@ -19,6 +20,9 @@ import { predictETA } from '../services/etaService';
 import {
   areCoordinatesValid,
   calculateHaversineKm,
+  citiesMatch,
+  MAX_DELIVERY_DISTANCE_KM,
+  normalizeCitySlug,
 } from '../utils/haversine';
 import FoodImage from '../components/FoodImage';
 import VegBadge from '../components/VegBadge';
@@ -43,30 +47,63 @@ export default function CartPage() {
     applyPromo,
     removePromo,
   } = useCart();
-  const { lat, lng, modelCity } = useLocationContext();
+  const { shortName, lat, lng, modelCity, selectCityPreset } = useLocationContext();
   const { showToast } = useToast();
 
   const [couponInput, setCouponInput] = useState('');
   const [liveEta, setLiveEta] = useState(null);
+  const [etaError, setEtaError] = useState(null);
+
+  const isCityMismatch = Boolean(
+    restaurant?.city && !citiesMatch(restaurant.city, shortName)
+  );
 
   useEffect(() => {
     if (!restaurant || items.length === 0) return undefined;
+    if (isCityMismatch) {
+      setLiveEta(null);
+      setEtaError(
+        `Selected restaurant delivers in ${restaurant.city}, not ${shortName}.`
+      );
+      return undefined;
+    }
+
+    const rLat = restaurant.coordinates?.lat;
+    const rLon = restaurant.coordinates?.lng;
+    if (!areCoordinatesValid(rLat, rLon, lat, lng)) {
+      setLiveEta(null);
+      setEtaError('Valid restaurant and delivery coordinates are required for ETA.');
+      return undefined;
+    }
+
+    const dist = calculateHaversineKm(rLat, rLon, lat, lng);
+    if (dist === null || dist > MAX_DELIVERY_DISTANCE_KM) {
+      setLiveEta(null);
+      setEtaError(
+        `Delivery distance (${dist ?? 'unknown'} km) exceeds ${MAX_DELIVERY_DISTANCE_KM} km.`
+      );
+      return undefined;
+    }
+
     let active = true;
+    setEtaError(null);
     const now = new Date();
     const jsDay = now.getDay();
     const pythonWeekday = jsDay === 0 ? 6 : jsDay - 1;
-    const rLat = restaurant.coordinates?.lat ?? 12.9716;
-    const rLon = restaurant.coordinates?.lng ?? 77.5946;
-    const dLat = lat ?? 12.9855;
-    const dLon = lng ?? 77.6412;
 
     predictETA({
+      restaurant_id: restaurant.id,
+      selected_city: shortName,
+      restaurant_lat: rLat,
+      restaurant_lon: rLon,
+      delivery_lat: lat,
+      delivery_lon: lng,
       Delivery_person_Age: 28,
       Delivery_person_Ratings: 4.7,
       Vehicle_condition: 2,
       multiple_deliveries: 0,
-      distance_km: calculateHaversineKm(rLat, rLon, dLat, dLon) ?? 4.8,
-      coordinates_valid: areCoordinatesValid(rLat, rLon, dLat, dLon),
+      distance_km: dist,
+      coordinates_valid: 1,
       order_time_missing: 0,
       order_hour: now.getHours(),
       order_day: now.getDate(),
@@ -82,16 +119,20 @@ export default function CartPage() {
       .then((res) => {
         if (active && typeof res?.predicted_eta_minutes === 'number') {
           setLiveEta(res.predicted_eta_minutes);
+          setEtaError(null);
         }
       })
-      .catch(() => {
-        // Silent fallback to restaurant baseline ETA
+      .catch((err) => {
+        if (active) {
+          setLiveEta(null);
+          setEtaError(err?.message || 'Unable to calculate live delivery ETA.');
+        }
       });
 
     return () => {
       active = false;
     };
-  }, [restaurant, items, lat, lng, modelCity]);
+  }, [restaurant, items, shortName, lat, lng, modelCity, isCityMismatch]);
 
   if (items.length === 0) {
     return (
@@ -161,6 +202,38 @@ export default function CartPage() {
       <div className="mt-8 grid gap-8 lg:grid-cols-12">
         {/* Items */}
         <div className="space-y-4 lg:col-span-7">
+          {isCityMismatch && (
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-950">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+                <div>
+                  <p className="font-bold">
+                    Cross-city cart detected ({restaurant.city} vs {shortName})
+                  </p>
+                  <p className="mt-0.5 text-amber-800">
+                    Your cart contains items from <strong>{restaurant.name}</strong> ({restaurant.city}), while your selected delivery city is <strong>{shortName}</strong>.
+                  </p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => selectCityPreset(normalizeCitySlug(restaurant.city))}
+                  className="rounded-xl bg-brand-primary px-3.5 py-2 font-bold text-white hover:bg-brand-primaryDark"
+                >
+                  Switch to {restaurant.city}
+                </button>
+                <button
+                  type="button"
+                  onClick={clearCart}
+                  className="rounded-xl border border-amber-300 bg-white px-3.5 py-2 font-bold text-amber-900 hover:bg-amber-100"
+                >
+                  Clear Cart
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center justify-between rounded-2xl border border-brand-primaryBorder bg-brand-primarySoft/60 px-4 py-3 text-xs">
             <span className="inline-flex items-center gap-2 font-semibold text-brand-black">
               {liveEta ? (
@@ -170,14 +243,16 @@ export default function CartPage() {
               )}
               {liveEta
                 ? `Estimated delivery in ~${Math.round(liveEta)} mins (AI Forecast)`
-                : `Estimated delivery in ~${restaurant?.etaMinutes || 25} mins`}
+                : etaError || 'Calculating live delivery estimate...'}
             </span>
-            <Link
-              to="/checkout"
-              className="font-bold text-brand-primary hover:underline"
-            >
-              Select address →
-            </Link>
+            {!isCityMismatch && (
+              <Link
+                to="/checkout"
+                className="font-bold text-brand-primary hover:underline"
+              >
+                Select address →
+              </Link>
+            )}
           </div>
 
           {items.map((item) => (
@@ -355,13 +430,23 @@ export default function CartPage() {
               </div>
             </div>
 
-            <Link
-              to="/checkout"
-              className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-brand-primary py-3.5 text-sm font-semibold text-white shadow-soft transition-colors hover:bg-brand-primaryDark"
-            >
-              Proceed to Checkout
-              <ArrowRight className="h-4 w-4" />
-            </Link>
+            {isCityMismatch ? (
+              <button
+                type="button"
+                disabled
+                className="mt-6 flex w-full cursor-not-allowed items-center justify-center gap-2 rounded-xl bg-neutral-300 py-3.5 text-sm font-semibold text-neutral-600"
+              >
+                Switch City or Clear Cart to Checkout
+              </button>
+            ) : (
+              <Link
+                to="/checkout"
+                className="mt-6 flex w-full items-center justify-center gap-2 rounded-xl bg-brand-primary py-3.5 text-sm font-semibold text-white shadow-soft transition-colors hover:bg-brand-primaryDark"
+              >
+                Proceed to Checkout
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            )}
           </div>
         </div>
       </div>

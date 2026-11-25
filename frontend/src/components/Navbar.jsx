@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   BarChart3,
@@ -20,7 +20,8 @@ import LocationModal from './LocationModal';
 import { useCart } from '../context/CartContext';
 import { useLocationContext } from '../context/LocationContext';
 import { useAuth } from '../context/AuthContext';
-import { RESTAURANTS } from '../data/restaurants';
+import { useToast } from '../context/ToastContext';
+import { fetchRestaurantsByCity } from '../services/restaurantService';
 import { formatPrice } from '../utils/formatters';
 
 export default function Navbar() {
@@ -29,12 +30,28 @@ export default function Navbar() {
   const { itemCount, subtotal, openDrawer } = useCart();
   const { shortName, address } = useLocationContext();
   const { user, openAuthModal, logout } = useAuth();
+  const { showToast } = useToast();
 
   const [locationModalOpen, setLocationModalOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [searchInput, setSearchInput] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
+  const [cityRestaurants, setCityRestaurants] = useState([]);
+
+  useEffect(() => {
+    let active = true;
+    fetchRestaurantsByCity({ city: shortName })
+      .then((res) => {
+        if (active) setCityRestaurants(res.restaurants || []);
+      })
+      .catch(() => {
+        if (active) setCityRestaurants([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [shortName]);
 
   const currentParams = new URLSearchParams(location.search);
   const isDiningTab =
@@ -47,21 +64,21 @@ export default function Navbar() {
     const q = searchInput.trim().toLowerCase();
     if (q.length < 2) return [];
     const results = [];
-    RESTAURANTS.forEach((r) => {
+    cityRestaurants.forEach((r) => {
       if (
         r.name.toLowerCase().includes(q) ||
         r.cuisine.toLowerCase().includes(q) ||
-        r.city.toLowerCase().includes(q)
+        (r.area || '').toLowerCase().includes(q)
       ) {
         results.push({
           type: 'Restaurant',
           title: r.name,
-          subtitle: `${r.cuisine} · ${r.city}`,
+          subtitle: `${r.cuisine} · ${r.area || r.city}`,
           slug: r.slug,
           image: r.image,
         });
       }
-      r.menu.forEach((m) => {
+      (r.menu || []).forEach((m) => {
         if (m.name.toLowerCase().includes(q)) {
           results.push({
             type: 'Dish',
@@ -74,13 +91,24 @@ export default function Navbar() {
       });
     });
     return results.slice(0, 6);
-  }, [searchInput]);
+  }, [searchInput, cityRestaurants]);
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
     setSearchFocused(false);
     const q = searchInput.trim();
     navigate(q ? `/restaurants?q=${encodeURIComponent(q)}` : '/restaurants');
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setProfileMenuOpen(false);
+    setMobileMenuOpen(false);
+    showToast({
+      title: 'Logged out',
+      description: 'You have been signed out of your demo account.',
+      type: 'success',
+    });
   };
 
   return (
@@ -192,7 +220,23 @@ export default function Navbar() {
                   Sign up
                 </button>
               </div>
-            ) : null}
+            ) : (
+              <div className="hidden items-center gap-1.5 sm:flex">
+                <Link
+                  to="/profile"
+                  className="rounded-lg px-2.5 py-2 text-sm font-medium text-neutral-700 transition-colors hover:bg-surface-soft hover:text-brand-black"
+                >
+                  Profile
+                </Link>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="rounded-lg px-2.5 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50"
+                >
+                  Log out
+                </button>
+              </div>
+            )}
 
             {/* Account / Profile Menu */}
             <div className="relative">
@@ -206,7 +250,7 @@ export default function Navbar() {
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand-primarySoft text-brand-primaryDark">
                   <User className="h-3.5 w-3.5" />
                 </span>
-                <span className="hidden max-w-[90px] truncate sm:inline">
+                <span className="hidden max-w-[110px] truncate sm:inline">
                   {user ? user.name : 'Menu'}
                 </span>
                 <ChevronDown className="h-3.5 w-3.5 text-neutral-400" />
@@ -224,7 +268,7 @@ export default function Navbar() {
                         {user ? user.name : 'Guest Customer'}
                       </p>
                       <p className="truncate text-[11px] text-neutral-500">
-                        {address || shortName}
+                        {user ? user.email : address || shortName}
                       </p>
                     </div>
 
@@ -281,10 +325,7 @@ export default function Navbar() {
                       <div className="border-t border-neutral-100 pt-1">
                         <button
                           type="button"
-                          onClick={() => {
-                            logout();
-                            setProfileMenuOpen(false);
-                          }}
+                          onClick={handleLogout}
                           className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-50"
                         >
                           <LogOut className="h-3.5 w-3.5" />
@@ -488,7 +529,7 @@ export default function Navbar() {
               ))}
             </nav>
 
-            {!user && (
+            {!user ? (
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
@@ -511,7 +552,20 @@ export default function Navbar() {
                   Sign up
                 </button>
               </div>
-            )}
+            ) : user ? (
+              <div className="mt-3 flex items-center justify-between rounded-xl border border-neutral-200 bg-surface-soft px-3 py-2">
+                <span className="truncate text-xs font-semibold text-brand-black">
+                  Signed in as {user.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="shrink-0 text-xs font-bold text-red-600 hover:underline"
+                >
+                  Log out
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
       </header>

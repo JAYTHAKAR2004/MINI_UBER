@@ -204,8 +204,10 @@ export default function PredictETAPage() {
     const isBlank = (v) =>
       v === '' || v === null || v === undefined || String(v).trim() === '';
 
-    if (derivedDistanceKm === null || derivedDistanceKm < 0) {
-      nextErrors.coordinates = 'Enter valid numeric latitude and longitude.';
+    if (derivedCoordinatesValid !== 1 || derivedDistanceKm === null || derivedDistanceKm < 0) {
+      nextErrors.coordinates = 'Enter valid India coordinates (Lat 6–38, Lon 68–98) before predicting ETA.';
+    } else if (derivedDistanceKm > 50) {
+      nextErrors.coordinates = `Route distance is ${derivedDistanceKm} km (maximum 50 km within a city).`;
     }
 
     const age = isBlank(form.Delivery_person_Age)
@@ -258,6 +260,10 @@ export default function PredictETAPage() {
       setApiError(null);
 
       const payload = {
+        restaurant_lat: Number(form.restaurantLat),
+        restaurant_lon: Number(form.restaurantLon),
+        delivery_lat: Number(form.deliveryLat),
+        delivery_lon: Number(form.deliveryLon),
         Delivery_person_Age: Number(form.Delivery_person_Age),
         Delivery_person_Ratings: Number(form.Delivery_person_Ratings),
         Vehicle_condition: Number(form.Vehicle_condition),
